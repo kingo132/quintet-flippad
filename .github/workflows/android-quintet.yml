@@ -32,11 +32,14 @@ jobs:
           python3 - <<'PY'
           from zipfile import ZipFile
           from pathlib import Path
+          import os,subprocess
           apks=list(Path('android-app/app/build/outputs/apk').glob('*/release/*.apk'))
           assert len(apks)==2
           for apk in apks:
               with ZipFile(apk) as z:
                   private=[n for n in z.namelist() if n.lower().endswith(('.sfc','.smc','.sav','.srm','.state','.keystore','.jks'))]
                   assert not private, private
+              tree=subprocess.check_output([os.environ['ANDROID_HOME']+'/build-tools/37.0.0/aapt2','dump','xmltree',str(apk),'--file','AndroidManifest.xml']).decode()
+              assert 'debuggable(0x0101000f)=true' not in tree, 'Release must not be debuggable'
           print('Both ROM-free source builds verified; no APK is published.')
           PY

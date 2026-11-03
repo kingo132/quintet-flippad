@@ -1,4 +1,19 @@
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.*
+
 plugins { id 'com.android.application' }
+
+abstract class PrivateGameAssets extends DefaultTask {
+ @InputFile @PathSensitive(PathSensitivity.NONE)
+ abstract RegularFileProperty getGameRom()
+ @OutputDirectory abstract DirectoryProperty getOutputDirectory()
+ @TaskAction void generate() {
+  File target=new File(outputDirectory.get().asFile,'private/game.sfc')
+  target.parentFile.mkdirs()
+  java.nio.file.Files.copy(gameRom.get().asFile.toPath(),target.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+ }
+}
 android {
  namespace 'local.sfc.tall'
  compileSdk 37
@@ -10,16 +25,19 @@ android {
   terranigma { dimension 'game'; applicationId 'local.games.terranigma' }
  }
  buildFeatures { buildConfig true }
- buildTypes { release { signingConfig signingConfigs.debug; debuggable project.hasProperty('qaBuild') && project.property('qaBuild') == 'true' } }
+ buildTypes { release { signingConfig signingConfigs.debug; debuggable false } }
  sourceSets {
   main { java.srcDirs=['../../android/src']; res.srcDirs=['../../android/res']; manifest.srcFile '../../android/AndroidManifest.xml' }
  }
 }
 // Only local private builds package the user's game. CI builds source without it.
-['soulblazer','terranigma'].each { game ->
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+ def game=variant.flavorName
  if(project.hasProperty(game+'Rom')) {
-  def task=tasks.register('bundle'+game.capitalize()+'Rom',Sync) { from(project.property(game+'Rom')); into "$buildDir/private/$game/private"; rename { 'game.sfc' } }
-  android.sourceSets[game].assets.srcDir "$buildDir/private/$game"
-  tasks.matching { it.name=='merge'+game.capitalize()+'ReleaseAssets' || it.name=='merge'+game.capitalize()+'DebugAssets' }.configureEach { dependsOn task }
+  def privateAssets=tasks.register('bundle'+variant.name.capitalize()+'Rom',PrivateGameAssets) {
+   gameRom.set(project.file(project.property(game+'Rom')))
+  }
+  // AGP's generated-source API carries the dependency through merge and lint.
+  variant.sources.assets.addGeneratedSourceDirectory(privateAssets) { it.outputDirectory }
  }
 }
