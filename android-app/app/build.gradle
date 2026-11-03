@@ -1,0 +1,25 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'local.sfc.tall'
+ compileSdk 37
+ buildToolsVersion '37.0.0'
+ defaultConfig { minSdk 26; targetSdk 37; versionCode 2; versionName '0.1.1' }
+ flavorDimensions 'game'
+ productFlavors {
+  soulblazer { dimension 'game'; applicationId 'local.games.soulblazer' }
+  terranigma { dimension 'game'; applicationId 'local.games.terranigma' }
+ }
+ buildFeatures { buildConfig true }
+ buildTypes { release { signingConfig signingConfigs.debug; debuggable project.hasProperty('qaBuild') && project.property('qaBuild') == 'true' } }
+ sourceSets {
+  main { java.srcDirs=['../../android/src']; res.srcDirs=['../../android/res']; manifest.srcFile '../../android/AndroidManifest.xml' }
+ }
+}
+// Only local private builds package the user's game. CI builds source without it.
+['soulblazer','terranigma'].each { game ->
+ if(project.hasProperty(game+'Rom')) {
+  def task=tasks.register('bundle'+game.capitalize()+'Rom',Sync) { from(project.property(game+'Rom')); into "$buildDir/private/$game/private"; rename { 'game.sfc' } }
+  android.sourceSets[game].assets.srcDir "$buildDir/private/$game"
+  tasks.matching { it.name=='merge'+game.capitalize()+'ReleaseAssets' || it.name=='merge'+game.capitalize()+'DebugAssets' }.configureEach { dependsOn task }
+ }
+}

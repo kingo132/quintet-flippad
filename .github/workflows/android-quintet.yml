@@ -1,0 +1,42 @@
+name: Android 17 standalone games
+on:
+  workflow_dispatch:
+  push:
+    branches: [quintet-flippad]
+concurrency:
+  group: quintet-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android tools
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
+      - name: Build native libraries
+        run: ./tools/build_quintet_android.sh
+      - name: Build without private games
+        run: ./android-app/gradlew -p android-app assembleRelease --no-daemon
+      - name: Verify private files are absent
+        run: |
+          python3 - <<'PY'
+          from zipfile import ZipFile
+          from pathlib import Path
+          apks=list(Path('android-app/app/build/outputs/apk').glob('*/release/*.apk'))
+          assert len(apks)==2
+          for apk in apks:
+              with ZipFile(apk) as z:
+                  private=[n for n in z.namelist() if n.lower().endswith(('.sfc','.smc','.sav','.srm','.state','.keystore','.jks'))]
+                  assert not private, private
+          print('Both ROM-free source builds verified; no APK is published.')
+          PY

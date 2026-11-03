@@ -374,10 +374,18 @@ void update_geometry(void)
     g_geometry_update = false;
 }
 
+// Tall display options are presentation-only.
+#include "../tall/tall.h"
 static void update_variables(void)
 {
     char key[256];
     struct retro_variable var;
+    var={"snes9x_tall_height",nullptr};unsigned tallHeight=0,tallLayers=0;bool tallSprites=true;
+    if(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE,&var)&&var.value)tallHeight=!strcmp(var.value,"auto")?1:!strcmp(var.value,"disabled")?0:atoi(var.value);
+    var={"snes9x_tall_layers",nullptr};if(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE,&var)&&var.value)tallLayers=!strcmp(var.value,"no_bg1")?1:!strcmp(var.value,"bg1")?2:0;
+    var={"snes9x_tall_sprites",nullptr};if(environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE,&var)&&var.value)tallSprites=strcmp(var.value,"disabled")!=0;
+    S9xTallConfigure(tallHeight,tallLayers,tallSprites);
+
 
     var.key = "snes9x_msu1_enhanced_audio";
     var.value = NULL;
@@ -1078,7 +1086,7 @@ void retro_get_system_info(struct retro_system_info *info)
 {
     memset(info,0,sizeof(retro_system_info));
 
-    info->library_name = "Snes9x";
+    info->library_name = "Snes9x Tall";
 #ifndef GIT_VERSION
 #define GIT_VERSION ""
 #endif
@@ -1143,7 +1151,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
     info->geometry.base_height = height;
     info->geometry.max_width = MAX_SNES_WIDTH_NTSC > MAX_SNES_WIDTH_4X
                                    ? MAX_SNES_WIDTH_NTSC : MAX_SNES_WIDTH_4X;
-    info->geometry.max_height = MAX_SNES_HEIGHT;
+    info->geometry.max_height = 2048;
     info->geometry.aspect_ratio = get_aspect_ratio(width, height);
     /* What the core actually emits: the DSP's own rate, or the enhanced
        44.1 kHz cadence when the MSU-1 path is upsampling. */
@@ -2447,8 +2455,28 @@ bool retro_unserialize(const void* data, size_t size)
     return true;
 }
 
+static void tall_submit_video(const void *pixels,unsigned width,unsigned height,size_t pitch)
+{
+    static unsigned previous_width=0,previous_height=0;
+    if(width!=previous_width||height!=previous_height){
+        struct retro_system_av_info av;retro_get_system_av_info(&av);
+        av.geometry.base_width=width;av.geometry.base_height=height;
+        av.geometry.aspect_ratio=(width==256&&height==S9xTallHeight()&&height>PPU.ScreenHeight)?get_aspect_ratio(width,PPU.ScreenHeight)*PPU.ScreenHeight/height:get_aspect_ratio(width,height);
+        environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY,&av.geometry);previous_width=width;previous_height=height;
+    }
+    video_cb(pixels,width,height,pitch);
+}
+
+extern "C" const uint16_t *retro_quintet_compose(const uint16_t*,unsigned,unsigned,size_t,unsigned*,unsigned*);
+extern "C" bool retro_quintet_should_present();
+extern "C" bool retro_quintet_active();
 bool8 S9xDeinitUpdate(int width, int height)
 {
+    if(!retro_quintet_should_present())return TRUE;
+    unsigned qw,qh;
+    if(!blargg_filter)if(const uint16_t *q=retro_quintet_compose(GFX.Screen,width,height,GFX.Pitch,&qw,&qh)){tall_submit_video(q,qw,qh,qw*2);return TRUE;}
+    if(!blargg_filter&&!retro_quintet_active())if(const uint16 *expanded=S9xTallCompose(width,height)){tall_submit_video(expanded,256,S9xTallHeight(),256*2);return TRUE;}
+
     static int burst_phase = 0;
     int overscan_offset = 0;
 
@@ -2548,7 +2576,7 @@ bool8 S9xDeinitUpdate(int width, int height)
         else
             snes_ntsc_blit(snes_ntsc, GFX.Screen, GFX.Pitch / 2, burst_phase, width, height, snes_ntsc_buffer, MAX_SNES_WIDTH_NTSC * 2);
 
-        video_cb(snes_ntsc_buffer + ((int)(MAX_SNES_WIDTH_NTSC) * overscan_offset), SNES_NTSC_OUT_WIDTH(256), height, MAX_SNES_WIDTH_NTSC * 2);
+        tall_submit_video(snes_ntsc_buffer + ((int)(MAX_SNES_WIDTH_NTSC) * overscan_offset), SNES_NTSC_OUT_WIDTH(256), height, MAX_SNES_WIDTH_NTSC * 2);
     }
     else if (width == MAX_SNES_WIDTH && hires_blend)
     {
@@ -2594,11 +2622,11 @@ bool8 S9xDeinitUpdate(int width, int height)
             width >>= 1;
         }
 
-        video_cb(GFX.Screen + ((int)(GFX.Pitch >> 1) * overscan_offset), width, height, GFX.Pitch);
+        tall_submit_video(GFX.Screen + ((int)(GFX.Pitch >> 1) * overscan_offset), width, height, GFX.Pitch);
     }
     else
     {
-        video_cb(GFX.Screen + ((int)(GFX.Pitch >> 1) * overscan_offset), width, height, GFX.Pitch);
+        tall_submit_video(GFX.Screen + ((int)(GFX.Pitch >> 1) * overscan_offset), width, height, GFX.Pitch);
     }
 
     return TRUE;
@@ -2663,3 +2691,7 @@ void S9xAutoSaveSRAM()
 {
     return;
 }
+
+// Logical height used by the standalone host when native fields are interlaced.
+extern "C" unsigned retro_tall_native_height(void){return PPU.ScreenHeight;}
+extern "C" unsigned retro_tall_double_height(void){return IPPU.DoubleHeightPixels?1:0;}

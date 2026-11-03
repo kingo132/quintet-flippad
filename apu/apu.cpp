@@ -381,3 +381,11 @@ void S9xAPULoadBlarggState(uint8 *oldblock)
     // blargg stores CPUIx in regs_in
     memcpy(SNES::cpu.registers, regs_in + 4, 4);
 }
+
+/* The host may advance gameplay faster while retaining real-time SPC/DSP time.
+ * Check the actual APU ratio, because reset and state loading also set it. */
+extern "C" void retro_quintet_speed(float speed){
+ if(speed<.5f)speed=.5f;if(speed>4.f)speed=4.f;
+ int denominator=int(256*speed+.5f);
+ if(spc::timing_hack_denominator!=denominator){S9xAPUExecute();S9xAPUTimingSetSpeedup(256-denominator);}
+}

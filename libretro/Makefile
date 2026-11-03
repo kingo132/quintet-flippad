@@ -775,3 +775,6 @@ endif
 clean:
 	rm -f $(OBJECTS) $(TARGET)
 endif
+
+# Local presentation includes must invalidate the desktop renderer as well.
+$(CORE_DIR)/gfx.o: $(CORE_DIR)/tall/quintet.inc $(CORE_DIR)/tall/render.inc $(CORE_DIR)/tall/tall.h

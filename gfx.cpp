@@ -21,7 +21,7 @@ std::string GFXInfoString;
 /* tile.c-side bridges (C linkage): VRAM/FillRAM for the C tile renderer
    without pulling memmap.h into C. Set in S9xGraphicsInit. */
 extern "C" { uint8 *tile_VRAM; uint8 *tile_FillRAM;
-             uint8 TileMode7Hires = 0; uint8 TileMode7HiresBilinear = 0; }
+             uint8 TileMode7Hires = 0; uint8 TileMode7HiresBilinear = 0; int32 TileTallY = 0; }
 
 extern struct SCheatData		Cheat;
 extern struct SLineData			LineData[240];
@@ -44,6 +44,10 @@ static uint16 get_crosshair_color (uint8);
 
 #define TILE_PLUS(t, x)	(((t) & 0xfc00) | ((t + x) & 0x3ff))
 
+
+// Extension renderer reuses the native drawing pipeline below.
+#include "tall/render.inc"
+#include "tall/quintet.inc"
 
 bool8 S9xGraphicsInit (void)
 {
@@ -193,6 +197,7 @@ void S9xStartScreenRefresh (void)
 			IPPU.RenderedFramesCount++;
 		}
 
+		if(!quintetProfile)TallBegin();
 		PPU.MosaicStart = 0;
 		PPU.RecomputeClipWindows = TRUE;
 		IPPU.PreviousLine = IPPU.CurrentLine = 0;
@@ -317,7 +322,7 @@ void RenderLine (uint8 C)
 	else
 	{
 		// if we're not rendering this frame, we still need to update this
-		// XXX: Check ForceBlank? Or anything else?
+	// XXX: Check ForceBlank? Or anything else?
 		if (IPPU.OBJChanged)
 			SetupOBJ();
 		PPU.RangeTimeOver |= GFX.OBJLines[C].RTOFlags;
@@ -454,8 +459,11 @@ static inline void RenderScreen (bool8 sub)
 
 void S9xUpdateScreen (void)
 {
+	QuintetCaptureRows();
+	if(!quintetProfile)TallBeforeUpdate();
 	if (IPPU.OBJChanged || IPPU.InterlaceOBJ)
 		SetupOBJ();
+	TallBandOBJ();
 
 	// XXX: Check ForceBlank? Or anything else?
 	PPU.RangeTimeOver |= GFX.OBJLines[GFX.EndY].RTOFlags;
@@ -1321,7 +1329,7 @@ static void DrawBackgroundOffset (int bg, uint8 Zh, uint8 Zl, int VOffOff)
 
 		for (uint32 Y = GFX.StartY; Y <= GFX.EndY; Y++)
 		{
-			uint32	Y2 = HiresInterlace ? Y * 2 + S9xInterlaceField() : Y;
+			uint32	Y2 = HiresInterlace ? Y * 2 + S9xInterlaceField() : Y + (tallBusy ? tallVirtualY : 0);
 			uint32	VOff = LineData[Y].BG[2].VOffset - 1;
 			uint32	HOff = LineData[Y].BG[2].HOffset;
 			uint32	HOffsetRow = VOff >> Offset2Shift;

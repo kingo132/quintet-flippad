@@ -69,6 +69,10 @@ struct retro_core_option_v2_category option_cats_us[] = {
 };
 
 struct retro_core_option_v2_definition option_defs_us[] = {
+   {"snes9x_tall_height","Tall: Vertical canvas",NULL,"Additional resident tilemap and OAM rendering. Special modes fall back to native output.",NULL,NULL,{{"disabled","Off"},{"auto","Automatic"},{"320",NULL},{"384",NULL},{"416",NULL},{"480",NULL},{"576",NULL},{"1024",NULL},{"2048",NULL},{NULL,NULL}},"disabled"},
+   {"snes9x_tall_layers","Tall: Extra background layers",NULL,"Does not alter native screen layers.",NULL,NULL,{{"all","All"},{"no_bg1","Exclude BG1"},{"bg1","Only BG1"},{NULL,NULL}},"all"},
+   {"snes9x_tall_sprites","Tall: Extra sprites",NULL,"Nearest OAM Y representation; hidden sprites may appear. No game object generation.",NULL,NULL,{{"enabled",NULL},{"disabled",NULL},{NULL,NULL}},"enabled"},
+
 
    /* These variable names and possible values constitute an ABI with ZMZ (ZSNES Libretro player).
     * Changing "Show layer 1" is fine, but don't change "layer_1"/etc or the possible values ("Yes|No").

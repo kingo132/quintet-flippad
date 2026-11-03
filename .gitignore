@@ -503,3 +503,20 @@ MigrationBackup/
 .DS_Store
 *.lock
 profile
+
+/android-app/**/build/
+/android-app/.gradle/
+/android-app/app/src/main/jniLibs/
+/android-app/local.properties
+*.keystore
+*.state
+*.bak
+*.ppm
+libs/
+obj/
+
+# Private runtime and validation data
+*.ram
+*.vram
+*.apk
+*.jks
