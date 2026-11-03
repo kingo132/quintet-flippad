@@ -197,7 +197,7 @@ void S9xStartScreenRefresh (void)
 			IPPU.RenderedFramesCount++;
 		}
 
-		if(!quintetProfile)TallBegin();
+		if(!quintetProfile)TallBegin();else QuintetBegin();
 		PPU.MosaicStart = 0;
 		PPU.RecomputeClipWindows = TRUE;
 		IPPU.PreviousLine = IPPU.CurrentLine = 0;

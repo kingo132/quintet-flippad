@@ -4,60 +4,75 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include "../shared/portrait_rules.h"
 static unsigned quintetProfile=0,quintetWidth=270;static bool quintetPresent=true;
 enum {MAX_W=640,MAX_H=1024};
 static uint32_t image[MAX_W*MAX_H];
-static uint8_t depth[MAX_W*MAX_H], subdepth[MAX_W*MAX_H];
+static uint8_t depth[MAX_W*MAX_H], subdepth[MAX_W*MAX_H],obj_claimed[MAX_W*MAX_H];
 static uint8_t colors[MAX_W*MAX_H], subcolors[MAX_W*MAX_H], sources[MAX_W*MAX_H];
 typedef struct {
- uint16_t sx[3],sy[3],tile[3],mapbase[3],mapsize[3],fixed,palette[256],logic;
+ uint16_t sx[3],sy[3],tile[3],mapbase[3],mapsize[3],fixed,palette[256],logic,output_palette[256],output_fixed;
  uint32_t windows;
- uint8_t mode,main,sub,mainwin,subwin,math,select,display,wl[2],wr[2];
+ uint8_t supported,mode,main,sub,mainwin,subwin,math,select,display,wl[2],wr[2];
 } Raster;
 static Raster raster[224];
 static int raster_valid;
+static uint8_t actor_frame[0x20000];
+static bool reading_actors;
+static uint16_t output_color(unsigned color,unsigned brightness){
+ const uint8_t*level=mul_brightness[brightness&15];
+ return BUILD_PIXEL(level[color&31],level[(color>>5)&31],level[(color>>10)&31]);
+}
+static void QuintetBegin(){if(quintetProfile){raster_valid=0;memcpy(actor_frame,Memory.RAM,sizeof(actor_frame));}}
+
 static void QuintetCaptureRows(){
  if(!quintetProfile||tallBusy)return;
  for(int y=IPPU.PreviousLine;y<IPPU.CurrentLine&&y<224;y++){
   if(y<0)continue;Raster*r=&raster[y];
   for(int i=0;i<3;i++){r->mapbase[i]=PPU.BG[i].SCBase;r->mapsize[i]=PPU.BG[i].SCSize;r->sx[i]=LineData[y].BG[i].HOffset;r->sy[i]=LineData[y].BG[i].VOffset-1;r->tile[i]=PPU.BG[i].NameBase;}
+  r->supported=fp_supported_background(PPU.BGMode,PPU.BG[0].BGSize||PPU.BG[1].BGSize,PPU.Mosaic>1&&(PPU.BGMosaic[0]||PPU.BGMosaic[1]));
   r->mode=PPU.BGMode|(PPU.BG3Priority?8:0);r->fixed=PPU.FixedColourRed|(PPU.FixedColourGreen<<5)|(PPU.FixedColourBlue<<10);
   r->main=Memory.FillRAM[0x212c];r->sub=Memory.FillRAM[0x212d];r->mainwin=Memory.FillRAM[0x212e];r->subwin=Memory.FillRAM[0x212f];
   r->math=Memory.FillRAM[0x2131];r->select=Memory.FillRAM[0x2130];r->display=Memory.FillRAM[0x2100];
   r->windows=Memory.FillRAM[0x2123]|Memory.FillRAM[0x2124]<<8|Memory.FillRAM[0x2125]<<16;
   r->logic=Memory.FillRAM[0x212a]|Memory.FillRAM[0x212b]<<8;
   r->wl[0]=Memory.FillRAM[0x2126];r->wr[0]=Memory.FillRAM[0x2127];r->wl[1]=Memory.FillRAM[0x2128];r->wr[1]=Memory.FillRAM[0x2129];
-  memcpy(r->palette,PPU.CGDATA,sizeof(r->palette));raster_valid=1;
+  memcpy(r->palette,PPU.CGDATA,sizeof(r->palette));
+  for(int c=0;c<256;c++)r->output_palette[c]=output_color(r->palette[c],r->display);
+  r->output_fixed=output_color(r->fixed,r->display);raster_valid=1;
  }
 }
 static const Raster* row_state(int y){if(y<0)y=0;if(y>223)y=223;return &raster[y];}
 /* The PPU scroll wraps at 1024; choose the world coordinate nearest the
    game's camera, including the fine scroll actually used by this raster. */
-static int unwrap(int actual,int camera){return camera+((actual-camera+512)&1023)-512;}
-static int window(const Raster*r,int layer,int x){
- unsigned f=(r->windows>>(layer*4))&15;int a=(x>=r->wl[0]&&x<=r->wr[0])^(f&1),b=(x>=r->wl[1]&&x<=r->wr[1])^((f>>2)&1);
- if(!(f&2))return(f&8)?b:0;if(!(f&8))return a;
- switch((r->logic>>(layer*2))&3){case 0:return a||b;case 1:return a&&b;case 2:return a!=b;default:return a==b;}
-}
+static int unwrap(int actual,int camera){return fp_unwrap10(actual,camera);}
+static int window(const Raster*r,int layer,int x){return fp_window(r->windows,r->logic,r->wl,r->wr,layer,x);}
 static int window_mode(int mode,int inside){return mode==3||(mode==2&&inside)||(mode==1&&!inside);}
 static uint32_t shade(const Raster*r,int x,int color,int source,int subcolor,int subhas){
  if(r->display&128)return 0;
- unsigned c=r->palette[color],other=(r->select&2)&&subhas?r->palette[subcolor]:r->fixed;
  int inside=window(r,5,x),clip=window_mode(r->select>>6,inside);
- int math=source<6&&(r->math&(1<<source))&&!window_mode((r->select>>4)&3,inside);
- uint32_t out=0;
- for(int k=0;k<3;k++){
-  int v=clip?0:((c>>(5*k))&31);
-  if(math){int b=(other>>(5*k))&31;v+=(r->math&128)?-b:b;if((r->math&64)&&(!(r->select&2)||subhas))v>>=1;}
-  if(v<0)v=0;if(v>31)v=31;v=((v<<3)|(v>>2))*(r->display&15)/15;out|=(uint32_t)v<<(16-8*k);
+ bool math=source<6&&(r->math&(1<<source))&&!window_mode((r->select>>4)&3,inside);
+ uint16_t out=clip?0:r->output_palette[color];
+ if(math){
+  uint16_t other=(r->select&2)&&subhas?r->output_palette[subcolor]:r->output_fixed;
+  bool half=(r->math&64)&&(!(r->select&2)||subhas)&&!clip;
+  if(r->math&128)out=half?COLOR_SUB::fn1_2(out,other):COLOR_SUB::fn(out,other);
+  else if(half)out=COLOR_ADD::fn1_2(out,other);
+  else if((r->display&15)==15)out=COLOR_ADD::fn(out,other);
+  else{
+   unsigned cap=mul_brightness[r->display&15][31];
+   unsigned red=std::min(cap,unsigned((out>>11)+(other>>11))),green=std::min(cap,unsigned(((out>>6)&31)+((other>>6)&31))),blue=std::min(cap,unsigned((out&31)+(other&31)));
+   out=BUILD_PIXEL(red,green,blue);
+  }
  }
- return out;
+ // Preserve the core's exact RGB565 rounding, including half-color math.
+ return ((out&0xf800)<<8)|((out&0x7e0)<<5)|((out&31)<<3);
 }
 static const int obj_priority[4]={2,3,6,9};
 static unsigned actors_drawn;
 static uint32_t hud_pixels[256*32];
 static int hud_active;static bool worldRendered,soul_bottom_blank;
-static uint16_t word(unsigned a){return Memory.RAM[a]|Memory.RAM[a+1]<<8;}
+static uint16_t word(unsigned a){const uint8_t*r=reading_actors?actor_frame:Memory.RAM;return r[a]|r[a+1]<<8;}
 static int char_pixel(unsigned addr,int x,int y){
  const uint16_t*v=(const uint16_t*)Memory.VRAM;unsigned a=(addr+y)&32767;
  unsigned b=v[a],c=v[(a+8)&32767],s=7-x;
@@ -104,7 +119,12 @@ static void capture_hud(const uint32_t*native){
   }
  }
 }
-static bool replace_native_pixel(int x,int y){
+static bool reconstruct_native(){
+ static int enabled=-1;if(enabled<0)enabled=getenv("QUINTET_RECONSTRUCT_NATIVE")?1:0;return enabled!=0;
+}
+static uint8_t native_replace[256*224];
+static bool should_replace_native_pixel(int x,int y){
+ if(reconstruct_native())return true;
  // The original Soul Blazer field reserves its final scanline as black.
  // Rebuild that line only when it is entirely blank, avoiding a floating seam.
  if(quintetProfile==1&&soul_bottom_blank&&y==223)return true;
@@ -116,8 +136,9 @@ static bool replace_native_pixel(int x,int y){
  unsigned a=hardware_word(r,2,r->sx[2]+x,r->sy[2]+y+1);
  return a==0x2820;
 }
+static bool replace_native_pixel(int x,int y){return native_replace[y*256+x]!=0;}
 static int obj_pixel(unsigned prop,int x,int y){
- unsigned tile=(prop&256)|(((prop&0xf0)+(y>>3)*16)&0xf0)|(((prop&15)+(x>>3))&15);
+ unsigned tile=fp_obj_tile(prop,x,y);
  return char_pixel(((PPU.OBJNameBase>>1)+tile*16+((tile&256)?(PPU.OBJNameSelect>>1):0))&32767,x&7,y&7);
 }
 static int logical_layer(int hardware){
@@ -161,15 +182,15 @@ static int bg_sample(int layer,int x,int y,int *prio,const Raster*r){
 static bool map_ready(){
  for(int layer=0;layer<2;layer++){
   if(PPU.BG[layer].BGSize)return false;
-  unsigned tested=0;
+  unsigned tested=0;bool enabled=false;
   for(int y: {8,112,216})for(int x: {8,128,248}){
-   const Raster*r=row_state(y);if(r->display&128)continue;
+   const Raster*r=row_state(y);if(r->display&128)continue;if(!r->supported)return false;
    if(!((r->main|r->sub)&(1<<layer)))continue;
-   unsigned tile;int wx=unwrap(r->sx[layer],camera_x(layer))+x,wy=unwrap(r->sy[layer],camera_y(layer))+y+1;
+   enabled=true;unsigned tile;int wx=unwrap(r->sx[layer],camera_x(layer))+x,wy=unwrap(r->sy[layer],camera_y(layer))+y+1;
    if(!map_word(layer,wx,wy,&tile))continue;
    ++tested;if(tile!=hardware_word(r,layer,r->sx[layer]+x,r->sy[layer]+y+1))return false;
   }
-  (void)tested;
+  if(enabled&&!tested)return false;
  }
  return true;
 }
@@ -177,12 +198,12 @@ static bool map_ready(){
  * Static compositions use live VRAM; streaming compositions read their current
  * source sheet through the cartridge's LoROM mapping. */
 static unsigned rom_byte(unsigned bank,unsigned adr){
- if(bank==0x7e||bank==0x7f)return Memory.RAM[((bank-0x7e)<<16)|(adr&65535)];
+ if(bank==0x7e||bank==0x7f)return (reading_actors?actor_frame:Memory.RAM)[((bank-0x7e)<<16)|(adr&65535)];
  unsigned bus=(bank<<16)+adr,off=quintetProfile==2?(bus&0x3fffff):(((bus&0x7f0000)>>1)|(bus&0x7fff));
  return off<Memory.CalculatedSize?Memory.ROM[off]:0;
 }
 static unsigned entity_byte(unsigned bank,unsigned adr){
- if(bank==0x7e||bank==0x7f)return Memory.RAM[((bank-0x7e)<<16)|(adr&65535)];
+ if(bank==0x7e||bank==0x7f)return (reading_actors?actor_frame:Memory.RAM)[((bank-0x7e)<<16)|(adr&65535)];
  return rom_byte(bank,adr);
 }
 static unsigned entity_word(unsigned bank,unsigned adr){return entity_byte(bank,adr)|entity_byte(bank,adr+1)<<8;}
@@ -198,11 +219,11 @@ static void actor_parts(int w,int h,int cx,int cy,int left,int top){
  std::stable_sort(active,active+n,[](unsigned a,unsigned b){auto order=[](unsigned a){unsigned f=word(a+0x1a);return (f&0x4000)?0x10000:(f&0x2000)?-1:int(word(a+2));};return order(a)>order(b);});
  for(unsigned list=0;list<n;list++){
   unsigned a=active[list];
-  unsigned bank=Memory.RAM[a+0x24],group=word(a+0x28),flip=word(a+0x1c),flags=word(a+0x16);
+  unsigned bank=actor_frame[a+0x24],group=word(a+0x28),flip=word(a+0x1c),flags=word(a+0x16);
   if((flags&0x2000)||(word(a+0x1a)&0x80))continue;
   unsigned palette_override=0;if((flags&0x800)&&!(word(a+0x26)&1)){if((int16_t)word(a+0x26)>=0)continue;palette_override=0xe00;}
   unsigned count=entity_word(bank,group);if(!count||count>64)continue;
-  int bx=word(a)-word(a+8)-cx,by=word(a+2)-word(a+10)-cy;
+  int bx=word(a)-word(a+8)-cx,by=word(a+2)-word(a+10)-cy-1;
   for(unsigned k=0;k<count;k++){
    unsigned part=group+2+k*7,prop=(entity_word(bank,part+5)^flip)|palette_override;
    int size=(entity_byte(bank,part)&1)?16:8;
@@ -216,8 +237,8 @@ static void actor_parts(int w,int h,int cx,int cy,int left,int top){
     if(dx>=left&&dx<left+256&&dy>=top&&dy<top+224&&!replace_native_pixel(dx-left,dy-top))continue;
     int sx=(prop&0x4000)?size-1-x:x,sy=(prop&0x8000)?size-1-y:y;
     unsigned tile=(prop&511)+(sx>>3)+(sy>>3)*16;
-    int pix=dynamic?source_pixel(Memory.RAM[a+0x2c],word(a+0x34),tile,sx&7,sy&7):obj_pixel(prop,sx,sy);
-    if(!pix)continue;int at=dy*w+dx,color=128+((prop>>9)&7)*16+pix;const Raster*r=row_state(dy-top);int win=window(r,4,dx-left);
+    int pix=dynamic?source_pixel(actor_frame[a+0x2c],word(a+0x34),tile,sx&7,sy&7):obj_pixel(prop,sx,sy);
+    if(!pix)continue;int at=dy*w+dx;if(!fp_claim_obj(obj_claimed,at))continue;int color=128+((prop>>9)&7)*16+pix;const Raster*r=row_state(dy-top);int win=window(r,4,dx-left);
     if((r->main&16)&&(!(r->mainwin&16)||!win)&&priority>depth[at]){colors[at]=color;sources[at]=((prop>>9)&7)<4?6:4;depth[at]=priority;}
     if((r->sub&16)&&(!(r->subwin&16)||!win)&&priority>subdepth[at]){subcolors[at]=color;subdepth[at]=priority;}
    }
@@ -230,12 +251,13 @@ static void terra_actor_parts(int w,int h,int cx,int cy,int left,int top){
  while(a>=0x1000&&a<0x2000&&!(a&63)&&n<64){
   unsigned index=(a-0x1000)/64;if(seen[index])break;seen[index]=true;list[n++]=a;a=word(a+0x2c);
  }
- std::stable_sort(list,list+n,[](unsigned a,unsigned b){int ay=word(a+2),by=word(b+2);return ay!=by?ay>by:(a==0x1000&&b!=0x1000);});
+ std::reverse(list,list+n);
+ std::stable_sort(list,list+n,[](unsigned a,unsigned b){return word(a+2)>word(b+2);});
  for(unsigned i=0;i<n;i++){
   unsigned a=list[i];if(word(a+4)&0x8000)continue;
-  unsigned bank=Memory.RAM[a+0x12],group=word(0x10000+a+0xa),flip=word(a+8)&0xc000;
+  unsigned bank=actor_frame[a+0x12],group=word(0x10000+a+0xa),flip=word(a+8)&0xc000;
   if(!group)continue;unsigned count=entity_byte(bank,group+12);if(!count||count>128)continue;
-  int bx=(int)word(a)-(int16_t)word(a+0x18)-cx,by=(int)word(a+2)-(int16_t)word(a+0x1a)-cy;
+  int bx=(int)word(a)-(int16_t)word(a+0x18)-cx,by=(int)word(a+2)-(int16_t)word(a+0x1a)-cy-1;
   unsigned resource=word(0x12016+a),source=0;
   bool raw=a==0x1000&&resource<32;
   if(raw){unsigned t=0xa252+6*resource;source=Memory.ROM[t]|Memory.ROM[t+1]<<8|Memory.ROM[t+2]<<16;source&=0x3fffff;if(source+0x4000>Memory.CalculatedSize)raw=false;}
@@ -250,7 +272,7 @@ static void terra_actor_parts(int w,int h,int cx,int cy,int left,int top){
     unsigned tile=(prop&511)+(sx>>3)+(sy>>3)*16;int pix;
     if(raw)pix=source_pixel(source>>16,source&65535,tile,sx&7,sy&7);
     else pix=obj_pixel(prop|(word(a+8)&0x100),sx,sy);
-    if(!pix)continue;int at=dy*w+dx,color=128+((prop>>9)&7)*16+pix;const Raster*r=row_state(dy-top);int win=window(r,4,dx-left);
+    if(!pix)continue;int at=dy*w+dx;if(!fp_claim_obj(obj_claimed,at))continue;int color=128+((prop>>9)&7)*16+pix;const Raster*r=row_state(dy-top);int win=window(r,4,dx-left);
     if((r->main&16)&&(!(r->mainwin&16)||!win)&&priority>depth[at]){colors[at]=color;sources[at]=((prop>>9)&7)<4?6:4;depth[at]=priority;}
     if((r->sub&16)&&(!(r->subwin&16)||!win)&&priority>subdepth[at]){subcolors[at]=color;subdepth[at]=priority;}
    }
@@ -270,6 +292,7 @@ static const uint32_t *QuintetCompose(const uint32_t*native,int nw,int nh,int dw
  if(soul_bottom_blank)for(int x=0;x<256;x++)if(native[223*256+x]&0xffffff){soul_bottom_blank=false;break;}
  hud_active=world&&h>224&&(quintetProfile==1?soul_hud_present():terra_hud_present());
  if(hud_active)capture_hud(native);
+ for(int y=0;y<224;y++)for(int x=0;x<256;x++)native_replace[y*256+x]=should_replace_native_pixel(x,y);
  worldRendered=world&&raster_valid;
  if(worldRendered){
   int cx=(quintetProfile==2?word(0x81e):word(0x33a))-left,cy=(quintetProfile==2?word(0x822):word(0x33c))-top;
@@ -293,7 +316,8 @@ static const uint32_t *QuintetCompose(const uint32_t*native,int nw,int nh,int dw
     if((r->sub&(1<<layer))&&(!(r->subwin&(1<<layer))||!win)&&p>subdepth[at]){subcolors[at]=c;subdepth[at]=p;}
    }
   }
-  if(tallSprites){if(quintetProfile==1)actor_parts(w,h,cx,cy,left,top);else terra_actor_parts(w,h,cx,cy,left,top);}
+  memset(obj_claimed,0,(size_t)w*h);
+  if(tallSprites){reading_actors=true;if(quintetProfile==1)actor_parts(w,h,cx,cy,left,top);else terra_actor_parts(w,h,cx,cy,left,top);reading_actors=false;}
   for(int y=0;y<h;y++)for(int x=0;x<w;x++){
    if(x>=left&&x<left+256&&y>=top&&y<top+224&&!replace_native_pixel(x-left,y-top))continue;
    int at=y*w+x,wx=cx+x,wy=cy+y;
