@@ -46,7 +46,7 @@ static bool env(unsigned c,void *p){
  }
 }
 static void video(const void *p,unsigned w,unsigned h,size_t stride){if(!p)return;if(w>1088||h>2048)abort();fw=w;fh=h;for(unsigned y=0;y<h;y++)memcpy(frame+y*w,(const char*)p+y*stride,w*2);}
-static size_t audio(const int16_t *s,size_t n){audio_samples+=n;for(size_t i=0;i<n*2;++i)if(s[i])nonzero_samples++;return n;}
+static size_t audio(const int16_t *s,size_t n){static FILE *capture;static bool opened;if(!opened){opened=true;const char*path=getenv("QUINTET_PCM");if(path)capture=fopen(path,"wb");}if(capture)fwrite(s,4,n,capture);audio_samples+=n;for(size_t i=0;i<n*2;++i)if(s[i])nonzero_samples++;return n;}
 static void poll(void){}
 static int16_t input(unsigned p,unsigned d,unsigned i,unsigned id){(void)d;(void)i;return p?0:(id==RETRO_DEVICE_ID_JOYPAD_MASK?keys:((keys>>id)&1));}
 static void dump(unsigned idx){char path[1024];snprintf(path,sizeof(path),"%s-%u.ppm",prefix,idx);FILE*f=fopen(path,"wb");fprintf(f,"P6\n%u %u\n255\n",fw,fh);for(unsigned i=0;i<fw*fh;i++){unsigned v=frame[i];unsigned char b[3]={((v>>11)&31)*255/31,((v>>5)&63)*255/63,(v&31)*255/31};fwrite(b,1,3,f);}fclose(f);}
@@ -67,7 +67,7 @@ int main(int argc,char**argv){if(argc<5){fprintf(stderr,"headless ROM HEIGHT PRE
   if(argc>5 && !strcmp(argv[5],"confirm") && nframe%120==60)keys=1<<RETRO_DEVICE_ID_JOYPAD_Y;
   for(unsigned j=0;j<range_count;j++)if(nframe>=ranges[j].start&&nframe<ranges[j].end)keys|=ranges[j].mask;
   unsigned present_every=getenv("QUINTET_PRESENT_EVERY")?atoi(getenv("QUINTET_PRESENT_EVERY")):1;if(!present_every)present_every=1;retro_quintet_set_present((nframe+1)%present_every==0||nframe==frames-1);
-  double t0=monotonic();retro_run();if(getenv("QUINTET_AUDIT")){unsigned same,total=retro_quintet_audit(&same);audited+=total;matching+=same;}double ms=(monotonic()-t0)*1000;if(nframe>=60){total_ms+=ms;measured++;if(ms>worst_ms)worst_ms=ms;}if(nframe==frames-1 || (argc>5 && nframe%300==299))dump(nframe+1);
+  double t0=monotonic();if(getenv("QUINTET_SPEED"))retro_quintet_speed(atof(getenv("QUINTET_SPEED")));retro_run();if(getenv("QUINTET_AUDIT")){unsigned same,total=retro_quintet_audit(&same);audited+=total;matching+=same;}double ms=(monotonic()-t0)*1000;if(nframe>=60){total_ms+=ms;measured++;if(ms>worst_ms)worst_ms=ms;}if(nframe==frames-1 || (argc>5 && nframe%300==299))dump(nframe+1);
  }
  {char p[1024];snprintf(p,sizeof(p),"%s.ram",prefix);FILE*f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM),1,retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM),f);fclose(f);snprintf(p,sizeof(p),"%s.vram",prefix);f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM),1,retro_get_memory_size(RETRO_MEMORY_VIDEO_RAM),f);fclose(f);}
  size_t n=retro_serialize_size();void *state=calloc(1,n);if(!retro_serialize(state,n))return 4;char path[1024];snprintf(path,sizeof(path),"%s.state",prefix);FILE*f=fopen(path,"wb");fwrite(state,1,n,f);fclose(f);free(state);

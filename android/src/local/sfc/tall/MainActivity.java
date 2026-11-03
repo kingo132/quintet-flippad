@@ -40,7 +40,9 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     void wakeLoop(){synchronized(loopWake){loopWake.notifyAll();}}
     final Handler ui = new Handler(Looper.getMainLooper());
     volatile int keys;
-    volatile boolean running, menuOpen, background;
+    volatile boolean running, menuOpen, background=true, audioFocus, windowFocused;
+    volatile int audioEpoch;
+    AudioManager audioManager; AudioFocusRequest audioRequest;
     volatile float speed = 1;
     volatile boolean sound = true;
     volatile int videoFilter;
@@ -84,6 +86,10 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
+        audioManager=(AudioManager)getSystemService(AUDIO_SERVICE);
+        audioRequest=new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setOnAudioFocusChangeListener(change->{audioFocus=change==AudioManager.AUDIOFOCUS_GAIN;if(!audioFocus)audioEpoch++;wakeLoop();},ui).build();
         immersive();
         if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,()->{if(menuOpen)closeMenu();else menu();});
         prefs = getSharedPreferences("layout", 0);
@@ -157,6 +163,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         return PortraitLayout.rowsForScale(available,PortraitLayout.scale(surfaceWidth,nativeWidth,zoom,integerScale),pad);
     }
     void remember() {
+        if(sound)requestGameAudio();else releaseGameAudio();
         prefs.edit().putInt("height", canvas).putInt("layers", layers).putFloat("speed", speed)
             .putBoolean("extraSprites",extraSprites).putInt("edgeOffset", edgeOffset).putBoolean("sound", sound).putBoolean("smooth", videoFilter == 1).putInt("videoFilter", videoFilter).putBoolean("integerScale", integerScale).putInt("videoSection", videoSection).putFloat("zoom", zoom).putInt("slot", slot).apply();
     }
@@ -176,20 +183,30 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         wakeLoop();
         if (!ready) toast("游戏数据载入失败，请重新安装此应用");
     }
+    void requestGameAudio(){
+        if(!background&&windowFocused&&sound&&!audioFocus&&audioManager!=null)
+            audioFocus=audioManager.requestAudioFocus(audioRequest)==AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        wakeLoop();
+    }
+    void releaseGameAudio(){audioFocus=false;audioEpoch++;if(audioManager!=null&&audioRequest!=null)audioManager.abandonAudioFocusRequest(audioRequest);}
+    AudioTrack createAudio(){
+        AudioTrack track=null;
+        try{
+            track=new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                .setAudioFormat(new AudioFormat.Builder().setSampleRate(audioRate()).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
+                .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(16384).build();
+            if(track.getState()!=AudioTrack.STATE_INITIALIZED){track.release();return null;}
+            track.play();return track;
+        }catch(RuntimeException error){if(track!=null)track.release();android.util.Log.w("QuintetAudio","Audio route not ready; retrying",error);return null;}
+    }
     void startLoop() {
         if (running || !ready) return;
         running = true;
         worker = new Thread(() -> {
             short[] pcm = new short[8192];
             AudioTrack audio = null;
-            try {
-                audio = new AudioTrack.Builder()
-                    .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-                    .setAudioFormat(new AudioFormat.Builder().setSampleRate(audioRate()).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
-                    .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(16384).build();
-                if (audio.getState() != AudioTrack.STATE_INITIALIZED) { audio.release(); audio = null; }
-                else audio.play();
-            } catch (Exception e) { if (audio != null) audio.release(); audio = null; }
+            int trackEpoch=-1;
             float lastSpeed = -1;
             long next = System.nanoTime(), measure = next;
             int frames = 0;
@@ -202,6 +219,11 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     next = System.nanoTime(); measure = next; frames = 0;
                     continue;
                 }
+                // A track created before onResume can be permanently silenced
+                // by Android 17 background-audio hardening. Create only after
+                // foreground focus, and rebuild after route/focus loss.
+                if(audio!=null&&(!audioFocus||trackEpoch!=audioEpoch)){audio.pause();audio.flush();audio.release();audio=null;lastSpeed=-1;}
+                if(audio==null&&audioFocus){audio=createAudio();trackEpoch=audioEpoch;lastSpeed=-1;}
                 if (audio != null) {
                     try {
                         if (lastSpeed != 1) { audio.setPlaybackParams(new PlaybackParams().setSpeed(1).setPitch(1)); lastSpeed = 1; }
@@ -244,7 +266,10 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     } catch (Exception e) { android.util.Log.w("TallVideo", "surface changed", e); }
                     finally { if (c != null) surface.getHolder().unlockCanvasAndPost(c); }
                 }
-                if (audio != null && n > 0) audio.write(pcm, 0, n);
+                if (audio != null && n > 0) {
+                    int written=audio.write(pcm,0,n);
+                    if(written<0){android.util.Log.w("QuintetAudio","AudioTrack write failed: "+written+"; rebuilding");audio.release();audio=null;lastSpeed=-1;}
+                }
                 frames++;
                 long now = System.nanoTime();
                 if (now - measure > 3000000000L) {
@@ -262,10 +287,10 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         worker.start();
     }
     void stopLoop() { running = false;wakeLoop(); if (worker != null) { try { worker.join(1200); } catch (InterruptedException e) { } worker = null; } }
-    @Override protected void onResume() { super.onResume(); background = false;wakeLoop(); immersive(); if (surface != null && surface.getHolder().getSurface().isValid()) startLoop(); }
-    @Override protected void onPause() { background = true;ui.removeCallbacks(selectHold);selectGameHeld=false; keys = 0; synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
+    @Override protected void onResume() { super.onResume(); background = false;requestGameAudio();wakeLoop(); immersive(); if (surface != null && surface.getHolder().getSurface().isValid()) startLoop(); }
+    @Override protected void onPause() { background = true;releaseGameAudio();ui.removeCallbacks(selectHold);selectGameHeld=false; keys = 0; synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
     @Override protected void onDestroy() { stopLoop(); ((InputManager)getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(this); synchronized (engine) { flush(); } super.onDestroy(); }
-    @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); if (focus) immersive(); }
+    @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); windowFocused=focus;if (focus) {immersive();requestGameAudio();}else releaseGameAudio(); }
 
     void toast(String text) {
         ui.post(() -> { notice = text; noticeUntil = System.currentTimeMillis() + 2200; controls.invalidate(); Toast.makeText(this, text, Toast.LENGTH_SHORT).show(); });

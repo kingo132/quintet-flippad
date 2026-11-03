@@ -387,5 +387,17 @@ void S9xAPULoadBlarggState(uint8 *oldblock)
 extern "C" void retro_quintet_speed(float speed){
  if(speed<.5f)speed=.5f;if(speed>4.f)speed=4.f;
  int denominator=int(256*speed+.5f);
+ /* The cartridge uploads its SPC program with CPU/APU handshakes. Slowing
+  * the SPC during that upload violates the driver's timeout and leaves all
+  * voices in noise mode or the master volume at zero. Keep hardware timing
+  * through IPL/reset/driver initialization, then decouple settled playback. */
+ static bool music_ready=false;
+ bool initialized=!SNES::smp.status.iplrom_enable
+     && !(SNES::dsp.spc_dsp.read(0x6c)&0xc0)
+     && SNES::dsp.spc_dsp.read(0x3d)!=0xff
+     && (SNES::dsp.spc_dsp.read(0x0c)||SNES::dsp.spc_dsp.read(0x1c));
+ bool voice=false;for(int i=0;i<8;i++)voice|=SNES::dsp.spc_dsp.read(i*16+8)!=0;
+ if(!initialized)music_ready=false;else if(voice)music_ready=true;
+ if(!music_ready)denominator=256;
  if(spc::timing_hack_denominator!=denominator){S9xAPUExecute();S9xAPUTimingSetSpeedup(256-denominator);}
 }
