@@ -12,7 +12,7 @@
 - FlipPad 弧形底边；插拔手柄自动切换触屏按键。自动视野按屏幕可用高度计算。
 - Select 短按：中文游戏助手；长按：原版 Select。Start 保留原版功能。
 - L1 / L2：减速 / 加速；R1：缩放视野；R2：滤镜。
-- 默认游戏 2 倍速，音乐正常速率；可选 0.5 / 1 / 2 / 3 / 4 倍速。
+- 默认游戏 2 倍速，音乐正常速率（手机媒体静音状态会在助手中提示）；可选 0.5 / 1 / 2 / 3 / 4 倍速。
 - 六个独立手动槽，独立后台续玩。写入采用同步临时文件和原子替换，上一份保留 `.bak`。
 
 《天地创造》开场尚未获得箱子时，原版物品菜单不可用，沿用游戏本来的剧情限制。
@@ -43,3 +43,17 @@
 基于 [libretro/snes9x](https://github.com/libretro/snes9x) `fae2fea08f74180759ef540ee94259213f503480`。通用 Tall 显示器与 Android 宿主沿用本地 SFC Tall 项目，专用地图显示代码沿用本地 Babel Recomp FlipPad 适配。WRAM 格式独立参照 RustyBlazer / Crysta 交叉核对。
 
 原始 Snes9x 说明保存在 [README-Snes9x.md](README-Snes9x.md)，许可见 [LICENSE](LICENSE)；滤镜及参考项目的具体来源、原始许可和通知见 [android/THIRD_PARTY_NOTICES.md](android/THIRD_PARTY_NOTICES.md) 与 `android-app/app/src/main/assets/notices/`。各组件保留其原有许可，此说明不对依赖重新授权。
+
+私有游戏的自动对照可在本地运行（结果目录不得提交到仓库）：
+
+```sh
+make -C libretro platform=osx ARCH=arm64 -j8
+clang -O2 -Ilibretro tools/verify_pair.c libretro/snes9x_libretro.dylib -o /tmp/quintet-verify-pair
+DYLD_LIBRARY_PATH="$PWD/libretro" python3 tools/verify_quintet.py \
+  --binary /tmp/quintet-verify-pair --rom '/absolute/path/天地创造.sfc' \
+  --profile 2 --frames 600 --out /tmp/quintet-private-results \
+  --state '/absolute/path/private-native.state' \
+  --script '/absolute/path/private-controller.keys' --present-every 4
+```
+
+输入脚本每行 `开始帧 结束帧 按键十六进制掩码`，区间左闭右开，掩码使用 libretro 标准 SNES 位序。省略 `--state` 可从标题启动，省略 `--script` 则不输入。`--profile 1` 对应创世封魔录。对照完整 CPU/内存/音频状态，并逐行比较未有意改动的原始画面区域；地图审计独立比较 WRAM 完整地图与原版 VRAM。

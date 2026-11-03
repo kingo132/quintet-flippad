@@ -330,7 +330,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             LinearLayout r = row(); for (float v : new float[]{.5f, 1, 2, 3, 4}) { final float rate = v; button(r, (v == (int)v ? ""+(int)v : ""+v)+"×", () -> { speed = rate; remember(); buildMenu(); }); }
             text("L1 减速 · L2 加速\n音乐与音效保持正常播放速率。",15);
             android.media.AudioManager volume=(android.media.AudioManager)getSystemService(AUDIO_SERVICE);
-            if(volume!=null&&volume.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)==0)text("手机媒体音量为零，可用手机音量键调高。",15);
+            if(volume!=null&&(volume.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)==0||volume.isStreamMute(android.media.AudioManager.STREAM_MUSIC)))text("手机媒体声音已静音，可用手机音量键恢复。",15);
             r = row(); button(r, sound ? "声音：开" : "声音：关", () -> { sound = !sound; remember(); buildMenu(); });
         } else if (tab == 2) {
             if (videoSection == 0) {
@@ -351,7 +351,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             } else if (videoSection == 1) {
                 text("滤镜："+VideoEffects.NAMES[videoFilter],18);
                 for(int group=0;group<3;group++){LinearLayout r=row();for(int col=0;col<2;col++){final int effect=group*2+col;button(r,VideoEffects.NAMES[effect]+(videoFilter==effect?" ✓":""),()->{videoFilter=effect;remember();buildMenu();});}}
-                text("xBRZ 2× / 3× 先处理像素边缘，再按当前缩放显示。滤镜不改变游戏速度和输入。",14);
+                text("xBRZ 2× / 3× 先处理像素边缘，再按当前缩放显示。原始像素最流畅，3× 滤镜更耗性能。",14);
             } else {
             text("上下扩屏：" + (canvas == 0 ? "关闭" : canvas == 1 ? "自动" : canvas + " 行") + " · " + (pad ? "FlipPad 布局" : "触屏宽度适配"), 16);
             LinearLayout r = row(); for (int v : new int[]{1, 0, 320, 416, 480}) { final int h = v; button(r, v == 0 ? "原始" : v == 1 ? "自动" : ""+v, () -> { canvas = h; synchronized (engine) { setCanvas(effectiveHeight()); } remember(); buildMenu(); }); }

@@ -10,6 +10,7 @@ extern void retro_quintet_configure(unsigned,unsigned);
 extern void retro_quintet_speed(float);
 extern unsigned retro_quintet_audit(unsigned*);
 extern void retro_quintet_set_present(bool);
+extern void retro_quintet_diagnostics(void);
 static const char *height, *prefix;
 struct keyrange{unsigned start,end,mask;};static struct keyrange ranges[4096];static unsigned range_count;
 static struct retro_core_option_v2_definition *defs;
@@ -70,6 +71,7 @@ int main(int argc,char**argv){if(argc<5){fprintf(stderr,"headless ROM HEIGHT PRE
  }
  {char p[1024];snprintf(p,sizeof(p),"%s.ram",prefix);FILE*f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM),1,retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM),f);fclose(f);snprintf(p,sizeof(p),"%s.vram",prefix);f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM),1,retro_get_memory_size(RETRO_MEMORY_VIDEO_RAM),f);fclose(f);}
  size_t n=retro_serialize_size();void *state=calloc(1,n);if(!retro_serialize(state,n))return 4;char path[1024];snprintf(path,sizeof(path),"%s.state",prefix);FILE*f=fopen(path,"wb");fwrite(state,1,n,f);fclose(f);free(state);
+ if(getenv("QUINTET_DIAG"))retro_quintet_diagnostics();
  if(getenv("QUINTET_AUDIT"))printf("map_words_matching=%llu map_words_compared=%llu\n",matching,audited);
  printf("audio_samples=%llu nonzero_samples=%llu\n",audio_samples,nonzero_samples);
  if(measured)printf("core_ms mean=%.3f max=%.3f samples=%u\n",total_ms/measured,worst_ms,measured);

@@ -56,7 +56,7 @@ static uint32_t shade(const Raster*r,int x,int color,int source,int subcolor,int
 static const int obj_priority[4]={2,3,6,9};
 static unsigned actors_drawn;
 static uint32_t hud_pixels[256*32];
-static int hud_active;static bool worldRendered;
+static int hud_active;static bool worldRendered,soul_bottom_blank;
 static uint16_t word(unsigned a){return Memory.RAM[a]|Memory.RAM[a+1]<<8;}
 static int char_pixel(unsigned addr,int x,int y){
  const uint16_t*v=(const uint16_t*)Memory.VRAM;unsigned a=(addr+y)&32767;
@@ -105,6 +105,9 @@ static void capture_hud(const uint32_t*native){
  }
 }
 static bool replace_native_pixel(int x,int y){
+ // The original Soul Blazer field reserves its final scanline as black.
+ // Rebuild that line only when it is entirely blank, avoiding a floating seam.
+ if(quintetProfile==1&&soul_bottom_blank&&y==223)return true;
  if(hud_active&&y<32)return true;
  // The game's eight-pixel BG3 frame belongs around the old 256x224 field.
  // Remove only its exact solid tile, preserving every dialogue glyph/border.
@@ -117,9 +120,15 @@ static int obj_pixel(unsigned prop,int x,int y){
  unsigned tile=(prop&256)|(((prop&0xf0)+(y>>3)*16)&0xf0)|(((prop&15)+(x>>3))&15);
  return char_pixel(((PPU.OBJNameBase>>1)+tile*16+((tile&256)?(PPU.OBJNameSelect>>1):0))&32767,x&7,y&7);
 }
-static int logical_layer(int hardware){return hardware^((word(0x86a)&0x80)?1:0);}
-static int camera_x(int hardware){return quintetProfile==2?word(0x81e + logical_layer(hardware)*2):word(0x33a+hardware*4);}
-static int camera_y(int hardware){return quintetProfile==2?word(0x822+logical_layer(hardware)*2):word(0x33c+hardware*4);}
+static int logical_layer(int hardware){
+ if(quintetProfile==2)return hardware^((word(0x86a)&0x80)?1:0);
+ // Soul Blazer can swap the terrain and cloud planes between BG1/BG2.
+ // The live screen-map address identifies their logical WRAM maps.
+ unsigned screen=PPU.BG[hardware].SCBase;
+ return screen==word(0x354+(hardware^1)*4)&&screen!=word(0x354+hardware*4)?hardware^1:hardware;
+}
+static int camera_x(int hardware){return quintetProfile==2?word(0x81e + logical_layer(hardware)*2):word(0x33a+logical_layer(hardware)*4);}
+static int camera_y(int hardware){return quintetProfile==2?word(0x822+logical_layer(hardware)*2):word(0x33c+logical_layer(hardware)*4);}
 static bool map_word(int layer,int x,int y,unsigned *out){
  unsigned a;
  if(quintetProfile==2){
@@ -131,11 +140,12 @@ static bool map_word(int layer,int x,int y,unsigned *out){
   unsigned cell=0xa000+logical*0x4000+2*((y>>4)*(w>>4)+(x>>4));if(cell+1>=0x10000)return false;
   unsigned met=word(cell)&511;a=word(0x2000+logical*0x1000+met*8+(((y>>3)&1)*2+((x>>3)&1))*2);
  }else{
-  int w=word(0x342+4*layer),h=word(0x344+4*layer);
+  int logical=logical_layer(layer),w=word(0x342+4*logical),h=word(0x344+4*logical);
+  if(logical==1&&w>=256&&h>=256){x=(x%w+w)%w;y=(y%h+h)%h;}
   if(x<0||y<0||x>=w||y>=h||w<256||w>4096||h<256||h>4096)return false;
-  unsigned cell=word(0x352+layer*4)+((y>>8)*(w>>8)+(x>>8))*256+((y>>4)&15)*16+((x>>4)&15);if(cell>=0x10000)return false;
-  unsigned def=word(0x35a+layer*4)+Memory.RAM[cell]*8+(((y>>3)&1)*2+((x>>3)&1))*2;if(def+1>=0x10000)return false;
-  a=(word(def)&word(0x35c+layer*4))|((unsigned)Memory.RAM[0x36b+layer*4]<<8);
+  unsigned cell=word(0x352+logical*4)+((y>>8)*(w>>8)+(x>>8))*256+((y>>4)&15)*16+((x>>4)&15);if(cell>=0x10000)return false;
+  unsigned def=word(0x35a+logical*4)+Memory.RAM[cell]*8+(((y>>3)&1)*2+((x>>3)&1))*2;if(def+1>=0x10000)return false;
+  a=(word(def)&word(0x35c+logical*4))|((unsigned)Memory.RAM[0x36b+logical*4]<<8);
  }
  *out=a;return true;
 }
@@ -256,11 +266,13 @@ static const uint32_t *QuintetCompose(const uint32_t*native,int nw,int nh,int dw
  int left=(w-256)/2,top=(h-224)/2;
  int map=word(quintetProfile==2?0x47e:0x314),play=quintetProfile==2?((word(0x1004)&0x8000)==0&&word(0x1000)>16):(word(0x374)!=0||word(0x376)>16);
  int world=dh>224&&play&&map<0x400&&(quintetProfile==1?soul_hud_present():word(0x6be)!=1)&&PPU.BGMode==1&&(Memory.FillRAM[0x212c]&3)&&word(quintetProfile==2?0x826:0x342)>=256&&word(quintetProfile==2?0x82a:0x344)>=256&&map_ready();
+ soul_bottom_blank=world&&quintetProfile==1;
+ if(soul_bottom_blank)for(int x=0;x<256;x++)if(native[223*256+x]&0xffffff){soul_bottom_blank=false;break;}
  hud_active=world&&h>224&&(quintetProfile==1?soul_hud_present():terra_hud_present());
  if(hud_active)capture_hud(native);
  worldRendered=world&&raster_valid;
  if(worldRendered){
-  int good2=word(quintetProfile==2?0x828:0x346)>=256;int cx=(quintetProfile==2?word(0x81e):word(0x33a))-left,cy=(quintetProfile==2?word(0x822):word(0x33c))-top;
+  int cx=(quintetProfile==2?word(0x81e):word(0x33a))-left,cy=(quintetProfile==2?word(0x822):word(0x33c))-top;
   int bounds_l=quintetProfile==2?word(0x874):0,bounds_t=quintetProfile==2?word(0x876):0,bounds_w=word(quintetProfile==2?0x878:0x342),bounds_h=word(quintetProfile==2?0x87a:0x344);
   if(quintetProfile==2&&word(0x866)>224)bounds_h-=word(0x866)-224;
   if(quintetProfile==1&&map==0&&word(0x316)==1&&bounds_h==256)bounds_h=224;
@@ -272,7 +284,6 @@ static const uint32_t *QuintetCompose(const uint32_t*native,int nw,int nh,int dw
    int at=y*w+x;const Raster*r=row_state(y-top);
    for(int layer=1;layer>=0;layer--){
     if((tallLayers==1&&layer==0)||(tallLayers==2&&layer!=0))continue;
-    if(layer&&!good2)continue;
     int sx=unwrap(r->sx[layer],camera_x(layer))-left+x;
     /* Visible PPU rows are 1..224; output rows are 0..223. */
     int sy=unwrap(r->sy[layer],camera_y(layer))-top+y+1;
@@ -323,6 +334,12 @@ extern "C" const uint16_t *retro_quintet_compose(const uint16_t*n,unsigned width
 
 /* Read-only diagnostic: compare the complete-map path with the independent
  * native VRAM ring. No emulated registers, RAM, ROM or clocks are changed. */
+extern "C" void retro_quintet_diagnostics(){
+ for(int layer=0;layer<2;layer++){
+  const Raster*r=&raster[112];fprintf(stderr,"layer%d camera=%d,%d scroll=%d,%d size=%d,%d mapbase=%x charbase=%x main=%x sub=%x mask=%x attr=%x\n",layer,camera_x(layer),camera_y(layer),r->sx[layer],r->sy[layer],word(0x342+layer*4),word(0x344+layer*4),r->mapbase[layer],r->tile[layer],r->main,r->sub,word(0x35c+layer*4),word(0x36a+layer*4));
+  for(int y:{8,112,216})for(int x:{8,128,248}){unsigned tile=0;int wx=unwrap(r->sx[layer],camera_x(layer))+x,wy=unwrap(r->sy[layer],camera_y(layer))+y+1;bool found=map_word(layer,wx,wy,&tile);fprintf(stderr,"  %d,%d world%d,%d found%d tile%x native%x\n",x,y,wx,wy,found,tile,hardware_word(r,layer,r->sx[layer]+x,r->sy[layer]+y+1));}
+ }
+}
 extern "C" unsigned retro_quintet_audit(unsigned *matches){
  *matches=0;if(!quintetProfile||PPU.BGMode!=1||!raster_valid)return 0;
  if(quintetProfile==1&&!soul_hud_present())return 0;
