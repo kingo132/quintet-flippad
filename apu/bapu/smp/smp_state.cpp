@@ -68,6 +68,7 @@ void SMP::save_state(uint8 **block) {
 }
 
 void SMP::load_state(uint8 **block) {
+  tempo_denominator=256;tempo_remainder=0;
   uint8 *ptr = *block;
   memcpy(apuram, ptr, 64 * 1024);
   ptr += 64 * 1024;

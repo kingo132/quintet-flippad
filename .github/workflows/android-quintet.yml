@@ -23,6 +23,8 @@ jobs:
           packages: platform-tools
       - name: Shared presentation rules
         run: cc -std=c11 -Wall -Wextra -Werror -Ishared tools/test_portrait_rules.c -o /tmp/portrait-rules && /tmp/portrait-rules
+      - name: PCM backpressure regression
+        run: python3 tools/verify_pcm_queue.py
       - name: Install Android tools
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Build native libraries

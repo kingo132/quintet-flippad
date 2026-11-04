@@ -382,8 +382,9 @@ void S9xAPULoadBlarggState(uint8 *oldblock)
     memcpy(SNES::cpu.registers, regs_in + 4, 4);
 }
 
-/* The host may advance gameplay faster while retaining real-time SPC/DSP time.
- * Check the actual APU ratio, because reset and state loading also set it. */
+/* The host advances gameplay while retaining real-time music timers/DSP.
+ * SPC instructions and cartridge port handshakes keep native hardware timing.
+ * Reset/state loading clear the host tempo, so reapply it at every host step. */
 extern "C" void retro_quintet_speed(float speed){
  if(speed<.5f)speed=.5f;if(speed>4.f)speed=4.f;
  int denominator=int(256*speed+.5f);
@@ -399,5 +400,11 @@ extern "C" void retro_quintet_speed(float speed){
  bool voice=false;for(int i=0;i<8;i++)voice|=SNES::dsp.spc_dsp.read(i*16+8)!=0;
  if(!initialized)music_ready=false;else if(voice)music_ready=true;
  if(!music_ready)denominator=256;
- if(spc::timing_hack_denominator!=denominator){S9xAPUExecute();S9xAPUTimingSetSpeedup(256-denominator);}
+ // CPU/SPC port handshakes must keep hardware timing even after startup.
+ // Only the timer-driven sequencer and DSP follow wall-clock music tempo.
+ if(spc::timing_hack_denominator!=256){S9xAPUExecute();S9xAPUTimingSetSpeedup(0);}
+ if(SNES::smp.tempo_denominator!=(unsigned)denominator){
+   S9xAPUExecute();SNES::dsp.synchronize();
+   SNES::smp.tempo_denominator=denominator;SNES::smp.tempo_remainder=0;
+ }
 }

@@ -9,6 +9,8 @@ public:
   unsigned mmio_read(unsigned addr);
   void mmio_write(unsigned addr, unsigned data);
 
+  // Host tempo scales music timers/DSP, never SPC command execution.
+  inline void tick_audio(unsigned clocks);
   void enter();
   void power();
   void reset();
@@ -99,6 +101,7 @@ public:
   uint64 cycle_table_cpu[256];
   unsigned cycle_table_dsp[256];
   uint64 cycle_step_cpu;
+  unsigned tempo_denominator=256, tempo_remainder=0;
 
   inline uint8  op_adc (uint8  x, uint8  y);
   inline uint16 op_addw(uint16 x, uint16 y);

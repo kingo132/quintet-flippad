@@ -1,19 +1,23 @@
-void SMP::tick() {
-  timer0.tick();
-  timer1.tick();
-  timer2.tick();
+void SMP::tick_audio(unsigned clocks) {
+  unsigned scaled=clocks;
+  if(tempo_denominator!=256){
+    unsigned total=tempo_remainder+clocks*256;
+    scaled=total/tempo_denominator;tempo_remainder=total%tempo_denominator;
+  }
+  for(unsigned i=0;i<scaled;i++){
+    timer0.tick();timer1.tick();timer2.tick();
+  }
+  dsp.clock+=scaled;
+}
 
+void SMP::tick() {
   clock++;
-  dsp.clock++;
+  tick_audio(1);
 }
 
 void SMP::tick(unsigned clocks) {
-  timer0.tick(clocks);
-  timer1.tick(clocks);
-  timer2.tick(clocks);
-
-  clock += clocks;
-  dsp.clock += clocks;
+  clock+=clocks;
+  tick_audio(clocks);
 }
 
 void SMP::op_io() {

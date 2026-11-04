@@ -36,6 +36,7 @@ void SMP::power() {
 }
 
 void SMP::reset() {
+  tempo_denominator=256;tempo_remainder=0;
   for(unsigned n = 0x0000; n <= 0xffff; n++) apuram[n] = 0x00;
 
   opcode_number = 0;

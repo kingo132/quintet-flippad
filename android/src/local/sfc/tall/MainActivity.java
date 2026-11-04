@@ -38,8 +38,32 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     final Object engine = new Object();
     final Object loopWake = new Object();
     void wakeLoop(){synchronized(loopWake){loopWake.notifyAll();}}
+    // One permit per display-aligned game frame. Missed permits are skipped,
+    // never replayed in a burst after a slow audio/device operation.
+    volatile long frameTick, outputPeriodNanos = 16666667;
+    long nextVsync;
+    final Choreographer.FrameCallback frameClock = new Choreographer.FrameCallback() {
+        public void doFrame(long time) {
+            if (!running) return;
+            Display display=surface.getDisplay();
+            double hz=display==null?60:display.getRefreshRate();
+            if(hz<=0)hz=60;
+            long nativePeriod=frameNanos();
+            int divisor=Math.max(1,(int)Math.round(hz*nativePeriod/1e9));
+            long aligned=Math.round(1e9*divisor/hz);
+            outputPeriodNanos=Math.abs(aligned-nativePeriod)<nativePeriod*.02?aligned:nativePeriod;
+            if(nextVsync==0||time-nextVsync>outputPeriodNanos*4)nextVsync=time;
+            if(time+Math.round(5e8/hz)>=nextVsync){
+                synchronized(loopWake){frameTick++;loopWake.notifyAll();}
+                nextVsync+=outputPeriodNanos;
+            }
+            Choreographer.getInstance().postFrameCallback(this);
+        }
+    };
     final Handler ui = new Handler(Looper.getMainLooper());
     volatile int keys;
+    int keyDirections, axisDirections;
+    void clearKeys(){keys=0;keyDirections=axisDirections=0;}
     volatile boolean running, menuOpen, background=true, audioFocus, windowFocused;
     volatile int audioEpoch;
     AudioManager audioManager; AudioFocusRequest audioRequest;
@@ -97,7 +121,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         canvas = prefs.getInt("height", 1);
         layers = prefs.getInt("layers", 0);
         extraSprites=prefs.getBoolean("extraSprites",true);
-        speed = prefs.getFloat("speed", 2);
+        speed = prefs.getFloat("speed", 1);
         sound = prefs.getBoolean("sound", true);
         videoFilter = prefs.getInt("videoFilter", prefs.getBoolean("smooth", false) ? 1 : 0);
         if (videoFilter < 0 || videoFilter >= VideoEffects.NAMES.length) videoFilter = 0;
@@ -148,7 +172,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         if (qaTouch) found = false;
         boolean changed = found != pad;
         pad = found;
-        keys = 0;
+        clearKeys();
         if (changed && ready) synchronized (engine) { setCanvas(effectiveHeight()); }
         if (controls != null) controls.invalidate();
     }
@@ -175,7 +199,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 rom = path;
                 playedFrames = 0; appliedHeight = -1;
                 setLayers(layers);setSprites(extraSprites);
-                keys = 0;
+                clearKeys();
                 prefs.edit().putString("rom", rom).apply();
                 if (resume && saveFile(0).isFile()) state(true, 0);
             }
@@ -197,18 +221,23 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 .setAudioFormat(new AudioFormat.Builder().setSampleRate(audioRate()).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
                 .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(16384).build();
             if(track.getState()!=AudioTrack.STATE_INITIALIZED){track.release();return null;}
-            track.play();return track;
+            return track;
         }catch(RuntimeException error){if(track!=null)track.release();android.util.Log.w("QuintetAudio","Audio route not ready; retrying",error);return null;}
     }
     void startLoop() {
         if (running || !ready) return;
         running = true;
+        nextVsync=0;
+        Choreographer.getInstance().removeFrameCallback(frameClock);
+        Choreographer.getInstance().postFrameCallback(frameClock);
         worker = new Thread(() -> {
             short[] pcm = new short[8192];
             AudioTrack audio = null;
             int trackEpoch=-1;
-            float lastSpeed = -1;
-            long next = System.nanoTime(), measure = next;
+            PcmQueue pending = new PcmQueue(32768);
+            int playbackRate=0;
+            long lastTick=frameTick, measure=System.nanoTime(), lastFrame=0, worstGap=0;
+            int stalled=0;
             int frames = 0;
             VideoEffects effects = new VideoEffects();
             boolean hardwareCanvas = true;
@@ -216,23 +245,27 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 if (menuOpen || background || !ready) {
                     if (audio != null && audio.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) { audio.pause(); audio.flush(); }
                     synchronized(loopWake){try{if(running&&(menuOpen||background||!ready))loopWake.wait();}catch(InterruptedException ignored){}}
-                    next = System.nanoTime(); measure = next; frames = 0;
+                    pending.clear(); lastTick=frameTick; measure=System.nanoTime(); frames=0; lastFrame=0; worstGap=0; stalled=0;
                     continue;
                 }
-                // A track created before onResume can be permanently silenced
-                // by Android 17 background-audio hardening. Create only after
-                // foreground focus, and rebuild after route/focus loss.
-                if(audio!=null&&(!audioFocus||trackEpoch!=audioEpoch)){audio.pause();audio.flush();audio.release();audio=null;lastSpeed=-1;}
-                if(audio==null&&audioFocus){audio=createAudio();trackEpoch=audioEpoch;lastSpeed=-1;}
-                if (audio != null) {
-                    try {
-                        if (lastSpeed != 1) { audio.setPlaybackParams(new PlaybackParams().setSpeed(1).setPitch(1)); lastSpeed = 1; }
-                        audio.setVolume(sound ? 1 : 0);
-                        if (audio.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) audio.play();
-                    } catch (Exception e) { audio.release(); audio = null; }
+                synchronized(loopWake){
+                    while(running&&!menuOpen&&!background&&ready&&frameTick==lastTick)
+                        try{loopWake.wait();}catch(InterruptedException ignored){}
+                    lastTick=frameTick;
+                }
+                if(!running||menuOpen||background||!ready)continue;
+                // Streaming writes must never wait for the audio device on the
+                // emulation/drawing thread. Preserve partially accepted PCM.
+                if(audio!=null&&(!audioFocus||trackEpoch!=audioEpoch)){
+                    audio.pause();audio.flush();audio.release();audio=null;pending.clear();playbackRate=0;
+                }
+                if(audio==null&&audioFocus){audio=createAudio();trackEpoch=audioEpoch;pending.clear();playbackRate=0;}
+                if(audio!=null){
+                    int rate=(int)Math.round(audioRate()*(double)frameNanos()/outputPeriodNanos);
+                    try{if(rate!=playbackRate){audio.setPlaybackRate(rate);playbackRate=rate;}}
+                    catch(RuntimeException unavailable){audio.release();audio=null;pending.clear();playbackRate=0;android.util.Log.w("QuintetAudio","Audio route changed; rebuilding",unavailable);}
                 }
                 int n;
-                long period;
                 synchronized (engine) {
                     int requested = effectiveHeight();
                     if (requested != appliedHeight) { setCanvas(requested); appliedHeight = requested; }
@@ -240,7 +273,6 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     configureProfile(getResources().getInteger(R.integer.game_profile),Math.max(256,Math.min(640,(int)Math.ceil(surfaceWidth/z))));
                     n = step(bitmap, pcm, keys, speed);
                     playedFrames += Math.max(1, (int)speed);
-                    period = frameNanos();
                     Canvas c = null;
                     try {
                         if(hardwareCanvas){
@@ -267,28 +299,32 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     finally { if (c != null) surface.getHolder().unlockCanvasAndPost(c); }
                 }
                 if (audio != null && n > 0) {
-                    int written=audio.write(pcm,0,n);
-                    if(written<0){android.util.Log.w("QuintetAudio","AudioTrack write failed: "+written+"; rebuilding");audio.release();audio=null;lastSpeed=-1;}
+                    if(!pending.offer(pcm,n))android.util.Log.w("QuintetAudio","PCM queue overflow; dropping oldest pending audio");
+                    int written=pending.drain(audio);
+                    if(written<0){android.util.Log.w("QuintetAudio","AudioTrack write failed: "+written+"; rebuilding");audio.release();audio=null;pending.clear();playbackRate=0;}
+                    // Queue PCM before starting. PlaybackParams is deliberately
+                    // unused: 1x does not need Android's time-stretch pipeline.
+                    else if(audio.getPlayState()!=AudioTrack.PLAYSTATE_PLAYING)audio.play();
                 }
                 frames++;
                 long now = System.nanoTime();
+                if(lastFrame!=0){long gap=now-lastFrame;worstGap=Math.max(worstGap,gap);if(gap>outputPeriodNanos*1.7)stalled++;}
+                lastFrame=now;
                 if (now - measure > 3000000000L) {
-                    android.util.Log.i("TallPerf", "fps=" + (frames * 1e9 / (now - measure)) + " gameSpeed=" + speed + " pad=" + pad + " dimensions=" + dimensions());
-                    frames = 0; measure = now;
+                    android.util.Log.i("TallPerf", "fps=" + (frames * 1e9 / (now - measure)) + " gameSpeed=" + speed + " pad=" + pad + " dimensions=" + dimensions()
+                        + " worstGapMs="+worstGap/1e6+" stalls="+stalled+" pending="+pending.size()
+                        + " underruns="+(audio==null?-1:audio.getUnderrunCount()));
+                    frames=0;measure=now;worstGap=0;stalled=0;
                 }
-                next += period;
-                long wait = next - System.nanoTime();
-                if (wait > 0) try { Thread.sleep(wait / 1000000, (int)(wait % 1000000)); } catch (InterruptedException e) { }
-                else if (wait < -100000000) next = System.nanoTime();
             }
             effects.close();
             if (audio != null) { audio.stop(); audio.release(); }
         }, "TallLoop");
         worker.start();
     }
-    void stopLoop() { running = false;wakeLoop(); if (worker != null) { try { worker.join(1200); } catch (InterruptedException e) { } worker = null; } }
+    void stopLoop() { running = false;Choreographer.getInstance().removeFrameCallback(frameClock);wakeLoop(); if (worker != null) { try { worker.join(1200); } catch (InterruptedException e) { } worker = null; } }
     @Override protected void onResume() { super.onResume(); background = false;requestGameAudio();wakeLoop(); immersive(); if (surface != null && surface.getHolder().getSurface().isValid()) startLoop(); }
-    @Override protected void onPause() { background = true;releaseGameAudio();ui.removeCallbacks(selectHold);selectGameHeld=false; keys = 0; synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
+    @Override protected void onPause() { background = true;releaseGameAudio();ui.removeCallbacks(selectHold);selectGameHeld=false; clearKeys(); synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
     @Override protected void onDestroy() { stopLoop(); ((InputManager)getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(this); synchronized (engine) { flush(); } super.onDestroy(); }
     @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); windowFocused=focus;if (focus) {immersive();requestGameAudio();}else releaseGameAudio(); }
 
@@ -306,10 +342,10 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     }
     void tintFocus() { for (int i = 0; i < focusButtons.size(); i++) { Button b = focusButtons.get(i); b.setBackground(box(i == selected ? MINT : CHIP)); b.setTextColor(i == selected ? Color.rgb(20, 52, 53) : Color.WHITE); } }
     LinearLayout row() { LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); rows.addView(r); return r; }
-    void closeMenu() { if (card != null) root.removeView(card); card = null; menuOpen = false; keys = 0;wakeLoop(); immersive(); }
+    void closeMenu() { if (card != null) root.removeView(card); card = null; menuOpen = false; clearKeys();wakeLoop(); immersive(); }
     void menu() {
         if (menuOpen) { closeMenu(); return; }
-        menuOpen = true; keys = 0; buildMenu();
+        menuOpen = true; clearKeys(); buildMenu();
     }
     File saveFile(int n) { return new File(rom + (n == 0 ? ".suspend.state" : n == 1 ? ".state" : ".slot" + n + ".state")); }
     String stamp(int n) { File f = saveFile(n); return f.isFile() ? new SimpleDateFormat("MM-dd HH:mm", Locale.ROOT).format(new Date(f.lastModified())) : "空"; }
@@ -426,7 +462,10 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             if(k==105){videoFilter=(videoFilter+1)%VideoEffects.NAMES.length;remember();toast(VideoEffects.NAMES[videoFilter]);}
         }return true;}
         int id = map(k); if (id < 0) return super.dispatchKeyEvent(e);
-        if (down) keys |= 1 << id; else keys &= ~(1 << id);
+        if(id>=4&&id<=7){
+            if(down)keyDirections|=1<<id;else keyDirections&=~(1<<id);
+            keys=(keys&~240)|keyDirections|axisDirections;
+        }else if (down) keys |= 1 << id; else keys &= ~(1 << id);
         if (e.getRepeatCount() == 0) android.util.Log.i("TallInput", "key="+k+" action="+e.getAction()+" device="+e.getDeviceId());
         return true;
     }
@@ -443,7 +482,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 }
                 lastHat = direction; return true;
             }
-            int b=0; if(x<-.5)b|=64;if(x>.5)b|=128;if(y<-.5)b|=16;if(y>.5)b|=32;keys=(keys&~240)|b;return true;
+            int b=0; if(x<-.5)b|=64;if(x>.5)b|=128;if(y<-.5)b|=16;if(y>.5)b|=32;axisDirections=b;keys=(keys&~240)|keyDirections|axisDirections;return true;
         }
         return super.onGenericMotionEvent(e);
     }
@@ -462,7 +501,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             for (float[] r : bounds) rects.add(new RectF(r[0], r[1], r[2], r[3]));
         }
         protected void onDraw(Canvas c){super.onDraw(c);if(pad)return;layoutKeys();p.setTextAlign(Paint.Align.CENTER);p.setTextSize(dp(18));for(int i=0;i<rects.size();i++){RectF r=rects.get(i);p.setColor((keys&masks[i])!=0?MINT:CHIP);c.drawRoundRect(r,dp(10),dp(10),p);p.setColor(Color.WHITE);c.drawText(labels[i],r.centerX(),r.centerY()+dp(6),p);}}
-        public boolean onTouchEvent(MotionEvent e){if(menuOpen)return false;if(e.getActionMasked()==MotionEvent.ACTION_CANCEL){keys=0;invalidate();return true;}if(pad){if(e.getAction()==MotionEvent.ACTION_UP)menu();return true;}layoutKeys();int active=0;boolean hit=false;for(int k=0;k<e.getPointerCount();k++){if((e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_POINTER_UP)&&e.getActionIndex()==k)continue;float x=e.getX(k),y=e.getY(k);for(int i=0;i<rects.size();i++)if(rects.get(i).contains(x,y)){active|=masks[i];hit=true;}}
+        public boolean onTouchEvent(MotionEvent e){if(menuOpen)return false;if(e.getActionMasked()==MotionEvent.ACTION_CANCEL){clearKeys();invalidate();return true;}if(pad){if(e.getAction()==MotionEvent.ACTION_UP)menu();return true;}layoutKeys();int active=0;boolean hit=false;for(int k=0;k<e.getPointerCount();k++){if((e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_POINTER_UP)&&e.getActionIndex()==k)continue;float x=e.getX(k),y=e.getY(k);for(int i=0;i<rects.size();i++)if(rects.get(i).contains(x,y)){active|=masks[i];hit=true;}}
             if(e.getActionMasked()==MotionEvent.ACTION_UP){float x=e.getX(),y=e.getY();if(rects.get(11).contains(x,y)||y<PortraitLayout.touchTop(getHeight(),getResources().getDisplayMetrics().density))menu();}
             keys=active;invalidate();return true;}
     }
