@@ -31,6 +31,10 @@ jobs:
         run: |
           clang++ -std=c++17 -O3 -pthread tools/filter_check.cpp android/filter_engine.cpp android/xbrz/xbrz.cpp -o /tmp/filter-check
           /tmp/filter-check
+      - name: Bounded video buffer ownership and shutdown
+        run: |
+          javac -d /tmp/frame-check android/src/local/sfc/tall/FrameExchange.java tools/FrameExchangeCheck.java
+          java -cp /tmp/frame-check local.sfc.tall.FrameExchangeCheck
       - name: Install Android tools
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Build native libraries

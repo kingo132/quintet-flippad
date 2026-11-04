@@ -33,14 +33,14 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     static native void resetCore();
 
     long playedFrames;
-    volatile int surfaceWidth, surfaceHeight;
+    volatile int surfaceWidth, surfaceHeight,videoEpoch;
     int appliedHeight = -1;
     final Object engine = new Object();
     final Object loopWake = new Object();
     void wakeLoop(){synchronized(loopWake){loopWake.notifyAll();}}
     // One permit per display-aligned game frame. Missed permits are skipped,
     // never replayed in a burst after a slow audio/device operation.
-    volatile long frameTick, outputPeriodNanos = 16666667;
+    volatile long frameTick,frameTickNanos, outputPeriodNanos = 16666667;
     long nextVsync;
     final Choreographer.FrameCallback frameClock = new Choreographer.FrameCallback() {
         public void doFrame(long time) {
@@ -54,7 +54,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             outputPeriodNanos=Math.abs(aligned-nativePeriod)<nativePeriod*.02?aligned:nativePeriod;
             if(nextVsync==0||time-nextVsync>outputPeriodNanos*4)nextVsync=time;
             if(time+Math.round(5e8/hz)>=nextVsync){
-                synchronized(loopWake){frameTick++;loopWake.notifyAll();}
+                synchronized(loopWake){frameTickNanos=time;frameTick++;loopWake.notifyAll();}
                 nextVsync+=outputPeriodNanos;
             }
             Choreographer.getInstance().postFrameCallback(this);
@@ -90,7 +90,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     int videoSection, lastBuiltTab=-1, lastBuiltSection=-1;
     ScrollView assistantScroll;
     long lastHatTime;
-    Bitmap bitmap;
+    volatile VideoPipeline video;
     final int BG = Color.rgb(29, 48, 64), CHIP = Color.rgb(43, 64, 81), MINT = Color.rgb(137, 222, 204);
 
     static String digest(File file)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");try(InputStream in=new FileInputStream(file)){byte[] b=new byte[65536];int n;while((n=in.read(b))>0)md.update(b,0,n);}StringBuilder out=new StringBuilder();for(byte b:md.digest())out.append(String.format(Locale.ROOT,"%02x",b&255));return out.toString();}
@@ -140,7 +140,6 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         setContentView(root);
         surfaceWidth = getResources().getDisplayMetrics().widthPixels;
         surfaceHeight = getResources().getDisplayMetrics().heightPixels;
-        bitmap = Bitmap.createBitmap(720, 2048, Bitmap.Config.RGB_565);
         InputManager inputs = (InputManager)getSystemService(INPUT_SERVICE);
         inputs.registerInputDeviceListener(this, ui);
         refreshPad();
@@ -158,7 +157,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         } catch (Exception e) { toast("载入失败：" + e.getMessage()); }
         surface.getHolder().addCallback(new SurfaceHolder.Callback() {
             public void surfaceCreated(SurfaceHolder holder) { startLoop(); }
-            public void surfaceChanged(SurfaceHolder h, int f, int w, int x) { surfaceWidth = w; surfaceHeight = x; appliedHeight = -1; }
+            public void surfaceChanged(SurfaceHolder h, int f, int w, int x) { surfaceWidth = w; surfaceHeight = x; appliedHeight = -1;videoEpoch++; }
             public void surfaceDestroyed(SurfaceHolder h) { stopLoop(); }
         });
     }
@@ -173,7 +172,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         }
         if(qaPad)mode=ControllerLayout.FLIPPAD;if(qaTouch)mode=ControllerLayout.TOUCH;
         boolean changed=(mode==ControllerLayout.FLIPPAD)!=pad||(mode!=ControllerLayout.TOUCH)!=controller;
-        pad=mode==ControllerLayout.FLIPPAD;controller=mode!=ControllerLayout.TOUCH;
+        pad=mode==ControllerLayout.FLIPPAD;controller=mode!=ControllerLayout.TOUCH;videoEpoch++;
         setRequestedOrientation(controller&&!pad?android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         clearKeys();appliedHeight=-1;
         if(changed&&ready)synchronized(engine){setCanvas(effectiveHeight());}
@@ -201,6 +200,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         return rows;
     }
     void remember() {
+        videoEpoch++; // Reject queued frames from the previous live display settings.
         if(sound)requestGameAudio();else releaseGameAudio();
         prefs.edit().putInt("height", canvas).putInt("layers", layers).putFloat("speed", speed)
             .putBoolean("extraSprites",extraSprites).putInt("edgeOffset", edgeOffset).putBoolean("sound", sound).putBoolean("smooth", videoFilter == 1).putInt("videoFilter", videoFilter).putBoolean("integerScale", integerScale).putInt("videoSection", videoSection).putFloat("zoom", zoom).putInt("slot", slot).apply();
@@ -244,6 +244,8 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         nextVsync=0;
         Choreographer.getInstance().removeFrameCallback(frameClock);
         Choreographer.getInstance().postFrameCallback(frameClock);
+        final VideoPipeline pipeline=new VideoPipeline(surface.getHolder(),error->{videoFilter=0;ui.post(()->{remember();toast("滤镜暂时不可用，已恢复原始像素");});android.util.Log.e("TallFilter","filter error",error);},()->videoEpoch);
+        video=pipeline;
         worker = new Thread(() -> {
             try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);}
             catch(SecurityException denied){android.util.Log.w("TallPerf","Display priority unavailable; using normal priority");}
@@ -253,21 +255,20 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             PcmQueue pending = new PcmQueue(32768);
             int playbackRate=0;
             long lastTick=frameTick, measure=System.nanoTime(), lastFrame=0, worstGap=0;
-            int stalled=0;long stepCost=0,drawCost=0;
+            int stalled=0;long stepCost=0,sequence=0;
             int frames = 0;
-            VideoEffects effects = new VideoEffects();
-            boolean hardwareCanvas = true;
-            while (running && worker == Thread.currentThread()) {
+            try{while (running && worker == Thread.currentThread()) {
                 if (menuOpen || background || !ready) {
                     if (audio != null && audio.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) { audio.pause(); audio.flush(); }
                     synchronized(loopWake){try{if(running&&(menuOpen||background||!ready))loopWake.wait();}catch(InterruptedException ignored){}}
-                    pending.clear(); lastTick=frameTick; measure=System.nanoTime(); frames=0; lastFrame=0; worstGap=0; stalled=0; stepCost=drawCost=0;
+                    pending.clear(); lastTick=frameTick; measure=System.nanoTime(); frames=0; lastFrame=0; worstGap=0; stalled=0; stepCost=0;
                     continue;
                 }
+                long scheduledFrameTime;
                 synchronized(loopWake){
                     while(running&&!menuOpen&&!background&&ready&&frameTick==lastTick)
                         try{loopWake.wait();}catch(InterruptedException ignored){}
-                    lastTick=frameTick;
+                    lastTick=frameTick;scheduledFrameTime=frameTickNanos;
                 }
                 if(!running||menuOpen||background||!ready)continue;
                 // Streaming writes must never wait for the audio device on the
@@ -281,42 +282,26 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     try{if(rate!=playbackRate){audio.setPlaybackRate(rate);playbackRate=rate;}}
                     catch(RuntimeException unavailable){audio.release();audio=null;pending.clear();playbackRate=0;android.util.Log.w("QuintetAudio","Audio route changed; rebuilding",unavailable);}
                 }
+                VideoPipeline.Frame frame;
+                try{frame=pipeline.acquire();}catch(InterruptedException interrupted){if(!running)break;continue;}
+                if(frame==null)break;
+                if(background||menuOpen||!ready){pipeline.release(frame);continue;}
                 int n;
-                synchronized (engine) {
-                    int requested = effectiveHeight();
-                    if (requested != appliedHeight) { setCanvas(requested); appliedHeight = requested; }
+                frame.epoch=videoEpoch;frame.screenWidth=surfaceWidth;frame.screenHeight=surfaceHeight;
+                synchronized(engine){
+                    int requested=effectiveHeight();
+                    if(requested!=appliedHeight){setCanvas(requested);appliedHeight=requested;}
                     float z=displayScale(surfaceWidth,surfaceHeight,256);
                     configureProfile(getResources().getInteger(R.integer.game_profile),Math.max(256,Math.min(640,(int)Math.ceil(surfaceWidth/z))));
                     long phaseStart=System.nanoTime();
-                    n = step(bitmap, pcm, keys, speed);
-                    stepCost+=System.nanoTime()-phaseStart;
-                    playedFrames += Math.max(1, (int)speed);
-                    long drawStart=System.nanoTime();
-                    Canvas c = null;
-                    try {
-                        if(hardwareCanvas){
-                            try{c=surface.getHolder().lockHardwareCanvas();}
-                            catch(RuntimeException unavailable){hardwareCanvas=false;android.util.Log.w("TallVideo","GPU drawing unavailable; using compatible drawing",unavailable);}
-                        }
-                        if(c==null)c = surface.getHolder().lockCanvas();
-                        if (c != null) {
-                            c.drawColor(Color.BLACK);
-                            int dims = dimensions(), w = dims >>> 16, h = dims & 65535;
-                            // Draw from physical y=0; never reserve status/title/cutout padding.
-                            float available = availableHeight(c.getWidth(),c.getHeight());
-                            float scale = displayScale(c.getWidth(),c.getHeight(),w);
-                            float left = (c.getWidth() - w * scale) / 2;
-                            c.save();
-                            if (pad) c.clipPath(FlipPadGeometry.visible(c.getWidth(), c.getHeight(), edgeOffset));
-                            else c.clipRect(0, 0, c.getWidth(), available);
-                            RectF bounds = new RectF(left,0,left+w*scale,h*scale);
-                            try { effects.draw(c,bitmap,w,h,bounds,videoFilter); }
-                            catch (RuntimeException error) { videoFilter=0;ui.post(()->{remember();toast("滤镜暂时不可用，已恢复原始像素");});effects.draw(c,bitmap,w,h,bounds,0);android.util.Log.e("TallFilter","filter error",error); }
-                            c.restore();
-                        }
-                    } catch (Exception e) { android.util.Log.w("TallVideo", "surface changed", e); }
-                    finally { if (c != null) surface.getHolder().unlockCanvasAndPost(c);drawCost+=System.nanoTime()-drawStart; }
+                    n=step(frame.pixels,pcm,keys,speed);stepCost+=System.nanoTime()-phaseStart;
+                    playedFrames+=Math.max(1,(int)speed);
+                    int dims=dimensions();frame.width=dims>>>16;frame.height=dims&65535;
+                    frame.effect=videoFilter;frame.presentAt=frame.effect>=4?scheduledFrameTime+2*outputPeriodNanos:0;frame.pad=pad;frame.edge=edgeOffset;
+                    frame.scale=displayScale(frame.screenWidth,frame.screenHeight,frame.width);
+                    frame.available=availableHeight(frame.screenWidth,frame.screenHeight);frame.sequence=sequence++;
                 }
+                if(!pipeline.submit(frame))break;
                 if (audio != null && n > 0) {
                     if(!pending.offer(pcm,n))android.util.Log.w("QuintetAudio","PCM queue overflow; dropping oldest pending audio");
                     int written=pending.drain(audio);
@@ -330,21 +315,23 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 if(lastFrame!=0){long gap=now-lastFrame;worstGap=Math.max(worstGap,gap);if(gap>outputPeriodNanos*1.7)stalled++;}
                 lastFrame=now;
                 if (now - measure > 3000000000L) {
-                    android.util.Log.i("TallPerf", "fps=" + (frames * 1e9 / (now - measure)) + " gameSpeed=" + speed + " pad=" + pad + " dimensions=" + dimensions()
+                    android.util.Log.i("TallPerf", "emuFps=" + (frames * 1e9 / (now - measure)) + " gameSpeed=" + speed + " pad=" + pad + " dimensions=" + dimensions()
                         + " worstGapMs="+worstGap/1e6+" stalls="+stalled+" pending="+pending.size()
-                        + " avgCoreMs="+stepCost/1e6/frames+" avgDrawMs="+drawCost/1e6/frames
+                        + " avgCoreMs="+stepCost/1e6/frames
                         + " underruns="+(audio==null?-1:audio.getUnderrunCount()));
-                    frames=0;measure=now;worstGap=0;stalled=0;stepCost=drawCost=0;
+                    frames=0;measure=now;worstGap=0;stalled=0;stepCost=0;
                 }
             }
-            effects.close();
-            if (audio != null) { audio.stop(); audio.release(); }
+            }finally{
+                pipeline.producerFinished();
+                if(audio!=null){audio.stop();audio.release();}
+            }
         }, "TallLoop");
         worker.start();
     }
-    void stopLoop() { running = false;Choreographer.getInstance().removeFrameCallback(frameClock);wakeLoop(); if (worker != null) { try { worker.join(1200); } catch (InterruptedException e) { } worker = null; } }
+    void stopLoop() { running = false;VideoPipeline session=video;if(session!=null)session.close();Choreographer.getInstance().removeFrameCallback(frameClock);wakeLoop(); if (worker != null) { worker.interrupt();try { worker.join(1200);if(session!=null)session.join(1200); } catch (InterruptedException e) { } worker = null; }video=null; }
     @Override protected void onResume() { super.onResume(); background = false;requestGameAudio();wakeLoop(); immersive(); if (surface != null && surface.getHolder().getSurface().isValid()) startLoop(); }
-    @Override protected void onPause() { background = true;releaseGameAudio();ui.removeCallbacks(selectHold);selectGameHeld=false; clearKeys(); synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
+    @Override protected void onPause() { background = true;videoEpoch++;releaseGameAudio();ui.removeCallbacks(selectHold);selectGameHeld=false; clearKeys(); synchronized (engine) { if (ready) { state(false, 0); flush(); } } super.onPause(); }
     @Override protected void onDestroy() { stopLoop(); ((InputManager)getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(this); synchronized (engine) { flush(); } super.onDestroy(); }
     @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); windowFocused=focus;if (focus) {immersive();requestGameAudio();}else releaseGameAudio(); }
 
@@ -365,7 +352,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     void closeMenu() { if (card != null) root.removeView(card); card = null; menuOpen = false; clearKeys();wakeLoop(); immersive(); }
     void menu() {
         if (menuOpen) { closeMenu(); return; }
-        menuOpen = true; clearKeys(); buildMenu();
+        menuOpen = true;videoEpoch++; clearKeys(); buildMenu();
     }
     File saveFile(int n) { return new File(rom + (n == 0 ? ".suspend.state" : n == 1 ? ".state" : ".slot" + n + ".state")); }
     String stamp(int n) { File f = saveFile(n); return f.isFile() ? new SimpleDateFormat("MM-dd HH:mm", Locale.ROOT).format(new Date(f.lastModified())) : "空"; }

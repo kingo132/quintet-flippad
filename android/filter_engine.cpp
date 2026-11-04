@@ -81,7 +81,9 @@ class SlicePool {
     }
 public:
     SlicePool(){
-        unsigned count=std::min(4u,cores.count());
+        // The game producer now runs concurrently: avoid four filter callers
+        // competing with emulation for all four performance cores on Pixel 9.
+        unsigned count=std::min(3u,cores.count());
         try{for(unsigned i=1;i<count;i++)workers.emplace_back([this]{
             cores.apply();unsigned seen=0;
             for(;;){
