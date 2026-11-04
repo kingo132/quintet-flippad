@@ -3,7 +3,7 @@ package local.sfc.tall;
 import android.graphics.*;
 final class VideoEffects {
     static {System.loadLibrary("tallfilters");}
-    static native boolean nativeXbrz(Bitmap source,Bitmap destination,int width,int height,int factor);
+    static native boolean nativeXbrz(Bitmap source,Bitmap destination,int width,int height,int factor,boolean fresh);
     static final String[] NAMES={"原始像素","平滑","扫描线","灰度","xBRZ 2×","xBRZ 3×"};
     final Paint bitmapPaint=new Paint(),scanPaint=new Paint();
     final ColorMatrixColorFilter gray;
@@ -13,8 +13,9 @@ final class VideoEffects {
         Bitmap image=bitmap;int sourceWidth=width,sourceHeight=height;
         if(effect==4||effect==5){
             int factor=effect==4?2:3;
-            if(filtered==null||filtered.getWidth()!=width*factor||filtered.getHeight()!=height*factor){if(filtered!=null)filtered.recycle();filtered=Bitmap.createBitmap(width*factor,height*factor,Bitmap.Config.ARGB_8888);}
-            if(!nativeXbrz(bitmap,filtered,width,height,factor))throw new IllegalStateException("xBRZ 处理失败");
+            boolean fresh=filtered==null||filtered.getWidth()!=width*factor||filtered.getHeight()!=height*factor;
+            if(fresh){if(filtered!=null)filtered.recycle();filtered=Bitmap.createBitmap(width*factor,height*factor,Bitmap.Config.ARGB_8888);}
+            if(!nativeXbrz(bitmap,filtered,width,height,factor,fresh))throw new IllegalStateException("xBRZ 处理失败");
             image=filtered;sourceWidth=width*factor;sourceHeight=height*factor;
         }
         bitmapPaint.setFilterBitmap(effect==1);bitmapPaint.setColorFilter(effect==3?gray:null);

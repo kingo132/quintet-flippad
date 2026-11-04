@@ -245,13 +245,15 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         Choreographer.getInstance().removeFrameCallback(frameClock);
         Choreographer.getInstance().postFrameCallback(frameClock);
         worker = new Thread(() -> {
+            try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);}
+            catch(SecurityException denied){android.util.Log.w("TallPerf","Display priority unavailable; using normal priority");}
             short[] pcm = new short[8192];
             AudioTrack audio = null;
             int trackEpoch=-1;
             PcmQueue pending = new PcmQueue(32768);
             int playbackRate=0;
             long lastTick=frameTick, measure=System.nanoTime(), lastFrame=0, worstGap=0;
-            int stalled=0;
+            int stalled=0;long stepCost=0,drawCost=0;
             int frames = 0;
             VideoEffects effects = new VideoEffects();
             boolean hardwareCanvas = true;
@@ -259,7 +261,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 if (menuOpen || background || !ready) {
                     if (audio != null && audio.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) { audio.pause(); audio.flush(); }
                     synchronized(loopWake){try{if(running&&(menuOpen||background||!ready))loopWake.wait();}catch(InterruptedException ignored){}}
-                    pending.clear(); lastTick=frameTick; measure=System.nanoTime(); frames=0; lastFrame=0; worstGap=0; stalled=0;
+                    pending.clear(); lastTick=frameTick; measure=System.nanoTime(); frames=0; lastFrame=0; worstGap=0; stalled=0; stepCost=drawCost=0;
                     continue;
                 }
                 synchronized(loopWake){
@@ -285,8 +287,11 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                     if (requested != appliedHeight) { setCanvas(requested); appliedHeight = requested; }
                     float z=displayScale(surfaceWidth,surfaceHeight,256);
                     configureProfile(getResources().getInteger(R.integer.game_profile),Math.max(256,Math.min(640,(int)Math.ceil(surfaceWidth/z))));
+                    long phaseStart=System.nanoTime();
                     n = step(bitmap, pcm, keys, speed);
+                    stepCost+=System.nanoTime()-phaseStart;
                     playedFrames += Math.max(1, (int)speed);
+                    long drawStart=System.nanoTime();
                     Canvas c = null;
                     try {
                         if(hardwareCanvas){
@@ -310,7 +315,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                             c.restore();
                         }
                     } catch (Exception e) { android.util.Log.w("TallVideo", "surface changed", e); }
-                    finally { if (c != null) surface.getHolder().unlockCanvasAndPost(c); }
+                    finally { if (c != null) surface.getHolder().unlockCanvasAndPost(c);drawCost+=System.nanoTime()-drawStart; }
                 }
                 if (audio != null && n > 0) {
                     if(!pending.offer(pcm,n))android.util.Log.w("QuintetAudio","PCM queue overflow; dropping oldest pending audio");
@@ -327,8 +332,9 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 if (now - measure > 3000000000L) {
                     android.util.Log.i("TallPerf", "fps=" + (frames * 1e9 / (now - measure)) + " gameSpeed=" + speed + " pad=" + pad + " dimensions=" + dimensions()
                         + " worstGapMs="+worstGap/1e6+" stalls="+stalled+" pending="+pending.size()
+                        + " avgCoreMs="+stepCost/1e6/frames+" avgDrawMs="+drawCost/1e6/frames
                         + " underruns="+(audio==null?-1:audio.getUnderrunCount()));
-                    frames=0;measure=now;worstGap=0;stalled=0;
+                    frames=0;measure=now;worstGap=0;stalled=0;stepCost=drawCost=0;
                 }
             }
             effects.close();

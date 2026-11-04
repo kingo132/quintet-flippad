@@ -185,6 +185,7 @@ double distYCbCrBuffered(uint32_t pix1, uint32_t pix2)
     static const std::vector<float> diffToDist = []
     {
         std::vector<float> tmp;
+        tmp.reserve(256 * 256 * 256);
 
         for (uint32_t i = 0; i < 256 * 256 * 256; ++i) //startup time: 114 ms on Intel Core i5 (four cores)
         {
@@ -1137,6 +1138,21 @@ struct ColorDistanceUnbufferedARGB
 };
 
 
+thread_local const float* paletteDistances=nullptr;
+inline uint32_t decodePalettePixel(uint32_t value){
+    if(!(value&0x80000000u))return value;
+    unsigned r=(value>>11)&31,g=(value>>5)&63,b=value&31;
+    return ((r<<3)|(r>>2))<<16|((g<<2)|(g>>4))<<8|(b<<3)|(b>>2);
+}
+struct ColorDistancePalette {
+    static double dist(uint32_t a,uint32_t b,double){return paletteDistances[((a>>16)&1023)*1024+((b>>16)&1023)];}
+};
+struct ColorGradientPalette {
+    template<unsigned M,unsigned N>static void alphaGrad(uint32_t& back,uint32_t front){
+        back=gradientRGB<M,N>(decodePalettePixel(front),decodePalettePixel(back));
+    }
+};
+
 struct ColorGradientRGB
 {
     template <unsigned int M, unsigned int N>
@@ -1168,6 +1184,13 @@ void xbrz::scale(size_t factor, const uint32_t* src, uint32_t* trg, int srcWidth
     static_assert(SCALE_FACTOR_MAX == 6);
     switch (colFmt)
     {
+        case ColorFormat::PALETTE:
+            paletteDistances=cfg.paletteDistances;
+            switch(factor){
+                case 2:return scaleImage<Scaler2x<ColorGradientPalette>,ColorDistancePalette,OobReaderDuplicate>(src,trg,srcWidth,srcHeight,cfg,yFirst,yLast);
+                case 3:return scaleImage<Scaler3x<ColorGradientPalette>,ColorDistancePalette,OobReaderDuplicate>(src,trg,srcWidth,srcHeight,cfg,yFirst,yLast);
+            }
+            break;
         case ColorFormat::RGB:
             switch (factor)
             {
@@ -1220,10 +1243,14 @@ void xbrz::scale(size_t factor, const uint32_t* src, uint32_t* trg, int srcWidth
 }
 
 
+float xbrz::rgbDistance(uint32_t a,uint32_t b){return static_cast<float>(ColorDistanceRGB::dist(a,b,1));}
+
 bool xbrz::equalColorTest(uint32_t col1, uint32_t col2, ColorFormat colFmt, double luminanceWeight, double equalColorTolerance)
 {
     switch (colFmt)
     {
+        case ColorFormat::PALETTE:
+            return ColorDistanceRGB::dist(decodePalettePixel(col1),decodePalettePixel(col2),luminanceWeight)<equalColorTolerance;
         case ColorFormat::RGB:
             return ColorDistanceRGB::dist(col1, col2, luminanceWeight) < equalColorTolerance;
         case ColorFormat::ARGB:

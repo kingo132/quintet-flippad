@@ -42,6 +42,7 @@ http://board.byuu.org/viewtopic.php?f=10&t=2248
 
 enum class ColorFormat //from high bits -> low bits, 8 bit per channel
 {
+    PALETTE, //adapter-only 2x/3x: RGB565 + palette ID
     RGB,  //8 bit for each red, green, blue, upper 8 bits unused
     ARGB, //including alpha channel, BGRA byte order on little-endian machines
     ARGB_UNBUFFERED, //like ARGB, but without the one-time buffer creation overhead (ca. 100 - 300 ms) at the expense of a slightly slower scaling time
@@ -73,6 +74,7 @@ void nearestNeighborScale(const uint32_t* src, int srcWidth, int srcHeight,
 
 
 //parameter tuning
+float rgbDistance(uint32_t first,uint32_t second);
 bool equalColorTest(uint32_t col1, uint32_t col2, ColorFormat colFmt, double luminanceWeight, double equalColorTolerance);
 }
 

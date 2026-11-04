@@ -18,7 +18,7 @@ android {
  namespace 'local.sfc.tall'
  compileSdk 37
  buildToolsVersion '37.0.0'
- defaultConfig { minSdk 26; targetSdk 37; versionCode 6; versionName '0.1.5' }
+ defaultConfig { minSdk 26; targetSdk 37; versionCode 7; versionName '0.1.6' }
  flavorDimensions 'game'
  productFlavors {
   soulblazer { dimension 'game'; applicationId 'local.games.soulblazer' }

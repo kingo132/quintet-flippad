@@ -27,6 +27,10 @@ jobs:
         run: python3 tools/verify_pcm_queue.py
       - name: Controller identity and landscape geometry
         run: python3 tools/verify_controller_layout.py
+      - name: Exact xBRZ output and animated dirty-band regression
+        run: |
+          clang++ -std=c++17 -O3 -pthread tools/filter_check.cpp android/filter_engine.cpp android/xbrz/xbrz.cpp -o /tmp/filter-check
+          /tmp/filter-check
       - name: Install Android tools
         run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;28.2.13676358'
       - name: Build native libraries

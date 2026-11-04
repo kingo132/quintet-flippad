@@ -23,6 +23,8 @@ namespace xbrz
 {
 struct ScalerCfg
 {
+    const float* paletteDistances = nullptr; //1024 x 1024 exact RGB distances
+
     double luminanceWeight            = 1;
     double equalColorTolerance        = 30;
     double centerDirectionBias        = 4;
