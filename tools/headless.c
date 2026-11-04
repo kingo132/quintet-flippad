@@ -58,6 +58,7 @@ int main(int argc,char**argv){if(argc<5){fprintf(stderr,"headless ROM HEIGHT PRE
  if(getenv("QUINTET_SPEED"))retro_quintet_speed(atof(getenv("QUINTET_SPEED")));
  if(getenv("QUINTET_SCRIPT")){FILE*f=fopen(getenv("QUINTET_SCRIPT"),"r");if(!f)return 7;while(range_count<4096&&fscanf(f,"%u %u %x",&ranges[range_count].start,&ranges[range_count].end,&ranges[range_count].mask)==3)range_count++;fclose(f);}
  unsigned long long audited=0,matching=0;
+ unsigned snapshot_every=getenv("QUINTET_SNAPSHOT_EVERY")?atoi(getenv("QUINTET_SNAPSHOT_EVERY")):300;if(!snapshot_every)snapshot_every=300;
  double total_ms=0,worst_ms=0;unsigned measured=0;
  for(nframe=0;nframe<frames;nframe++){keys=0;if(argc>5 && !strcmp(argv[5],"demo")){if(nframe%180>=100 && nframe%180<102)keys=1<<RETRO_DEVICE_ID_JOYPAD_START;if(nframe>240 && nframe<360)keys=1<<RETRO_DEVICE_ID_JOYPAD_DOWN;}
   if(argc>5 && !strcmp(argv[5],"down") && nframe>=60 && nframe<90)keys=1<<RETRO_DEVICE_ID_JOYPAD_DOWN;
@@ -67,7 +68,7 @@ int main(int argc,char**argv){if(argc<5){fprintf(stderr,"headless ROM HEIGHT PRE
   if(argc>5 && !strcmp(argv[5],"confirm") && nframe%120==60)keys=1<<RETRO_DEVICE_ID_JOYPAD_Y;
   for(unsigned j=0;j<range_count;j++)if(nframe>=ranges[j].start&&nframe<ranges[j].end)keys|=ranges[j].mask;
   unsigned present_every=getenv("QUINTET_PRESENT_EVERY")?atoi(getenv("QUINTET_PRESENT_EVERY")):1;if(!present_every)present_every=1;retro_quintet_set_present((nframe+1)%present_every==0||nframe==frames-1);
-  double t0=monotonic();if(getenv("QUINTET_SPEED"))retro_quintet_speed(atof(getenv("QUINTET_SPEED")));retro_run();if(getenv("QUINTET_AUDIT")){unsigned same,total=retro_quintet_audit(&same);audited+=total;matching+=same;}double ms=(monotonic()-t0)*1000;if(nframe>=60){total_ms+=ms;measured++;if(ms>worst_ms)worst_ms=ms;}if(nframe==frames-1 || (argc>5 && nframe%300==299))dump(nframe+1);
+  double t0=monotonic();if(getenv("QUINTET_SPEED"))retro_quintet_speed(atof(getenv("QUINTET_SPEED")));retro_run();if(getenv("QUINTET_AUDIT")){unsigned same,total=retro_quintet_audit(&same);audited+=total;matching+=same;}double ms=(monotonic()-t0)*1000;if(nframe>=60){total_ms+=ms;measured++;if(ms>worst_ms)worst_ms=ms;}if(nframe==frames-1 || (argc>5 && (nframe+1)%snapshot_every==0))dump(nframe+1);
  }
  {char p[1024];snprintf(p,sizeof(p),"%s.ram",prefix);FILE*f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM),1,retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM),f);fclose(f);snprintf(p,sizeof(p),"%s.vram",prefix);f=fopen(p,"wb");fwrite(retro_get_memory_data(RETRO_MEMORY_VIDEO_RAM),1,retro_get_memory_size(RETRO_MEMORY_VIDEO_RAM),f);fclose(f);}
  size_t n=retro_serialize_size();void *state=calloc(1,n);if(!retro_serialize(state,n))return 4;char path[1024];snprintf(path,sizeof(path),"%s.state",prefix);FILE*f=fopen(path,"wb");fwrite(state,1,n,f);fclose(f);free(state);

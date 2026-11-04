@@ -72,7 +72,11 @@ static const int obj_priority[4]={2,3,6,9};
 static unsigned actors_drawn;
 static uint32_t hud_pixels[256*32];
 static int hud_active;static bool worldRendered,soul_bottom_blank;
-static uint16_t word(unsigned a){const uint8_t*r=reading_actors?actor_frame:Memory.RAM;return r[a]|r[a+1]<<8;}
+// Terranigma updates metatiles/camera for the next VBlank while the current
+// native raster still uses the previous VRAM upload. Reuse the WRAM snapshot
+// already captured at visible-frame start, for the whole presentation read.
+// Otherwise a lift can fail map_ready for one frame and black out the extension.
+static uint16_t word(unsigned a){const uint8_t*r=(reading_actors||quintetProfile==2)?actor_frame:Memory.RAM;return r[a]|r[a+1]<<8;}
 static int char_pixel(unsigned addr,int x,int y){
  const uint16_t*v=(const uint16_t*)Memory.VRAM;unsigned a=(addr+y)&32767;
  unsigned b=v[a],c=v[(a+8)&32767],s=7-x;
@@ -92,7 +96,7 @@ static bool soul_hud_present(){
  return (v[(a+33)&32767]&1023)==0x24c&&(v[(a+34)&32767]&1023)==0x256&&(v[(a+96)&32767]&1023)==0x20a;
 }
 static bool terra_hud_present(){
- if(PPU.BGMode!=1||word(0x6be)!=0||Memory.RAM[0xdc2])return false;
+ if(PPU.BGMode!=1||word(0x6be)!=0)return false;
  const Raster*r=&raster[8];if(!(r->main&4))return false;
  const uint16_t*v=(const uint16_t*)Memory.VRAM;unsigned a=PPU.BG[2].SCBase;
  // LEVEL and LIFE belong to gameplay. Inventory has another layout.
@@ -130,8 +134,10 @@ static bool should_replace_native_pixel(int x,int y){
  if(quintetProfile==1&&soul_bottom_blank&&y==223)return true;
  if(hud_active&&y<32)return true;
  // The game's eight-pixel BG3 frame belongs around the old 256x224 field.
- // Remove only its exact solid tile, preserving every dialogue glyph/border.
- if(quintetProfile!=2||word(0x6be)==1||Memory.RAM[0xdc2]||(x>=8&&x<248&&y<216))return false;
+ // Text ownership does not make that frame part of dialogue. Remove only
+ // its known solid tile even while speaking; glyphs and box edges have
+ // different tile words and remain the exact native pixels.
+ if(quintetProfile!=2||word(0x6be)==1||(x>=8&&x<248&&y<216))return false;
  const Raster*r=row_state(y);if(!(r->main&4))return false;
  unsigned a=hardware_word(r,2,r->sx[2]+x,r->sy[2]+y+1);
  return a==0x2820;

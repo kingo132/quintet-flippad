@@ -9,9 +9,12 @@ p.add_argument('--binary',type=Path,required=True);p.add_argument('--rom',type=P
 p.add_argument('--profile',type=int,choices=[1,2],required=True);p.add_argument('--out',type=Path,required=True)
 p.add_argument('--frames',type=int,default=600);p.add_argument('--state',type=Path);p.add_argument('--script',type=Path)
 p.add_argument('--present-every',type=int,default=1)
+p.add_argument('--snapshot-every',type=int,default=300)
 p.add_argument('--width',type=int,default=270);p.add_argument('--height',type=int,default=416)
-a=p.parse_args();a.out.mkdir(parents=True,exist_ok=True);out=a.out.resolve();env=os.environ.copy()
-env.update(QUINTET_PROFILE=str(a.profile),QUINTET_AUDIT='1',QUINTET_WIDTH=str(a.width),QUINTET_PRESENT_EVERY=str(a.present_every))
+a=p.parse_args();
+if a.snapshot_every<1:p.error('--snapshot-every must be positive')
+a.out.mkdir(parents=True,exist_ok=True);out=a.out.resolve();env=os.environ.copy()
+env.update(QUINTET_PROFILE=str(a.profile),QUINTET_AUDIT='1',QUINTET_WIDTH=str(a.width),QUINTET_PRESENT_EVERY=str(a.present_every),QUINTET_SNAPSHOT_EVERY=str(a.snapshot_every))
 if a.state:env['TALL_STATE_IN']=str(a.state.resolve())
 if a.script:env['QUINTET_SCRIPT']=str(a.script.resolve())
 run=subprocess.run([str(a.binary.resolve()),str(a.rom.resolve()),str(a.height),str(out/'expanded'),str(a.frames),'script'],env=env,capture_output=True)
@@ -30,5 +33,5 @@ for path in out.glob('expanded-[0-9]*.ppm'):
  count+=1
 matches=re.search(rb'map_words_matching=(\d+) map_words_compared=(\d+)',run.stdout)
 assert matches and matches[1]==matches[2], 'full-map path differs from native VRAM'
-result=dict(profile=a.profile,frames=a.frames,native_snapshots=count,complete_state_identical=True,native_interior_identical=True,map_words_matching=int(matches[1]),map_words_compared=int(matches[2]),present_every=a.present_every)
+result=dict(profile=a.profile,frames=a.frames,native_snapshots=count,complete_state_identical=True,native_interior_identical=True,map_words_matching=int(matches[1]),map_words_compared=int(matches[2]),present_every=a.present_every,snapshot_every=a.snapshot_every)
 (out/'results.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
