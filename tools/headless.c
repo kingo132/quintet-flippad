@@ -54,7 +54,7 @@ int main(int argc,char**argv){if(argc<5){fprintf(stderr,"headless ROM HEIGHT PRE
  retro_set_environment(env);retro_set_video_refresh(video);retro_set_audio_sample_batch(audio);retro_set_input_poll(poll);retro_set_input_state(input);retro_init();
  struct retro_game_info game={.path=argv[1]};if(!retro_load_game(&game))return 3;retro_set_controller_port_device(0,RETRO_DEVICE_JOYPAD);
  const char *loadpath=getenv("TALL_STATE_IN");if(loadpath){FILE*f=fopen(loadpath,"rb");if(!f)return 5;size_t sz=retro_serialize_size();void*b=calloc(1,sz);fread(b,1,sz,f);fclose(f);if(!retro_unserialize(b,sz))return 6;free(b);}
- if(getenv("QUINTET_PROFILE"))retro_quintet_configure(!strcmp(height,"disabled")?0:atoi(getenv("QUINTET_PROFILE")),270);
+ if(getenv("QUINTET_PROFILE"))retro_quintet_configure(!strcmp(height,"disabled")?0:atoi(getenv("QUINTET_PROFILE")),getenv("QUINTET_WIDTH")?atoi(getenv("QUINTET_WIDTH")):270);
  if(getenv("QUINTET_SPEED"))retro_quintet_speed(atof(getenv("QUINTET_SPEED")));
  if(getenv("QUINTET_SCRIPT")){FILE*f=fopen(getenv("QUINTET_SCRIPT"),"r");if(!f)return 7;while(range_count<4096&&fscanf(f,"%u %u %x",&ranges[range_count].start,&ranges[range_count].end,&ranges[range_count].mask)==3)range_count++;fclose(f);}
  unsigned long long audited=0,matching=0;

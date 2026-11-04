@@ -71,7 +71,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
     volatile boolean sound = true;
     volatile int videoFilter;
     volatile boolean integerScale=true;
-    volatile boolean pad;
+    volatile boolean pad, controller;
     boolean ready, qaPad, qaTouch;
     boolean extraSprites=true, selectGameHeld;
     final Runnable selectHold=()->{if(!menuOpen&&!background){selectGameHeld=true;keys|=1<<2;toast("游戏 SELECT");}};
@@ -163,28 +163,42 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         });
     }
     void refreshPad() {
-        boolean found = qaPad;
-        for (int id : InputDevice.getDeviceIds()) {
-            InputDevice d = InputDevice.getDevice(id);
-            if (d != null && (d.getName().toLowerCase(Locale.ROOT).contains("flippad") ||
-                (d.getSources() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)) found = true;
+        int mode=ControllerLayout.TOUCH;
+        for(int id:InputDevice.getDeviceIds()){
+            InputDevice d=InputDevice.getDevice(id);if(d==null)continue;
+            int sources=d.getSources();
+            boolean gamepad=(sources&InputDevice.SOURCE_GAMEPAD)==InputDevice.SOURCE_GAMEPAD
+                ||(sources&InputDevice.SOURCE_JOYSTICK)==InputDevice.SOURCE_JOYSTICK;
+            mode=Math.max(mode,ControllerLayout.classify(d.isVirtual(),gamepad,d.getVendorId(),d.getProductId()));
         }
-        if (qaTouch) found = false;
-        boolean changed = found != pad;
-        pad = found;
-        clearKeys();
-        if (changed && ready) synchronized (engine) { setCanvas(effectiveHeight()); }
-        if (controls != null) controls.invalidate();
+        if(qaPad)mode=ControllerLayout.FLIPPAD;if(qaTouch)mode=ControllerLayout.TOUCH;
+        boolean changed=(mode==ControllerLayout.FLIPPAD)!=pad||(mode!=ControllerLayout.TOUCH)!=controller;
+        pad=mode==ControllerLayout.FLIPPAD;controller=mode!=ControllerLayout.TOUCH;
+        setRequestedOrientation(controller&&!pad?android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE:android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        clearKeys();appliedHeight=-1;
+        if(changed&&ready)synchronized(engine){setCanvas(effectiveHeight());}
+        if(controls!=null)controls.invalidate();
+        android.util.Log.i("TallLayout","mode="+mode+" flipPad="+pad+" controller="+controller+" orientation="+getRequestedOrientation());
     }
     public void onInputDeviceAdded(int id) { refreshPad(); }
     public void onInputDeviceChanged(int id) { refreshPad(); }
     public void onInputDeviceRemoved(int id) { refreshPad(); }
+    float availableHeight(float width,float height){
+        return pad?FlipPadGeometry.edgeY(0,width,height,edgeOffset):controller?height:PortraitLayout.touchTop(height,getResources().getDisplayMetrics().density);
+    }
+    float displayScale(float width,float height,int nativeWidth){
+        float value=PortraitLayout.scale(width,nativeWidth,zoom,integerScale);
+        return controller&&!pad?ControllerLayout.landscapeScale(width,height,value,integerScale):value;
+    }
     int effectiveHeight() {
-        if (canvas != 1) return canvas;
-        if (pad && zoom == 0 && !integerScale) return 1;
-        int nativeWidth=256;
-        float available = pad ? FlipPadGeometry.edgeY(0,surfaceWidth,surfaceHeight,edgeOffset) : PortraitLayout.touchTop(surfaceHeight,getResources().getDisplayMetrics().density);
-        return PortraitLayout.rowsForScale(available,PortraitLayout.scale(surfaceWidth,nativeWidth,zoom,integerScale),pad);
+        if(canvas==0)return 0;
+        if(pad&&canvas==1&&zoom==0&&!integerScale)return 1;
+        float available=availableHeight(surfaceWidth,surfaceHeight);
+        float scale=displayScale(surfaceWidth,surfaceHeight,256);
+        int rows=PortraitLayout.rowsForScale(available,scale,controller);
+        if(controller&&!pad&&surfaceWidth>surfaceHeight)rows=Math.max(224,(int)Math.ceil(available/scale/8)*8);
+        if(canvas!=1)return controller&&!pad&&surfaceWidth>surfaceHeight?Math.min(canvas,rows):canvas;
+        return rows;
     }
     void remember() {
         if(sound)requestGameAudio();else releaseGameAudio();
@@ -269,7 +283,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 synchronized (engine) {
                     int requested = effectiveHeight();
                     if (requested != appliedHeight) { setCanvas(requested); appliedHeight = requested; }
-                    float z=PortraitLayout.scale(surfaceWidth,256,zoom,integerScale);
+                    float z=displayScale(surfaceWidth,surfaceHeight,256);
                     configureProfile(getResources().getInteger(R.integer.game_profile),Math.max(256,Math.min(640,(int)Math.ceil(surfaceWidth/z))));
                     n = step(bitmap, pcm, keys, speed);
                     playedFrames += Math.max(1, (int)speed);
@@ -284,8 +298,8 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                             c.drawColor(Color.BLACK);
                             int dims = dimensions(), w = dims >>> 16, h = dims & 65535;
                             // Draw from physical y=0; never reserve status/title/cutout padding.
-                            float available = pad ? FlipPadGeometry.bottom(c.getWidth(), c.getHeight(), edgeOffset) : PortraitLayout.touchTop(c.getHeight(), getResources().getDisplayMetrics().density);
-                            float scale = PortraitLayout.scale(c.getWidth(), w, zoom, integerScale);
+                            float available = availableHeight(c.getWidth(),c.getHeight());
+                            float scale = displayScale(c.getWidth(),c.getHeight(),w);
                             float left = (c.getWidth() - w * scale) / 2;
                             c.save();
                             if (pad) c.clipPath(FlipPadGeometry.visible(c.getWidth(), c.getHeight(), edgeOffset));
@@ -358,7 +372,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         int viewHeight=root.getHeight()>0?root.getHeight():surfaceHeight;
         int viewWidth=root.getWidth()>0?root.getWidth():surfaceWidth;
         int bottom=pad?(int)FlipPadGeometry.bottom(viewWidth,viewHeight,edgeOffset):viewHeight-dp(10);
-        FrameLayout.LayoutParams place = new FrameLayout.LayoutParams(-1,Math.max(dp(330),bottom-dp(30))); place.setMargins(dp(8), dp(22), dp(8), 0); root.addView(card, place);
+        FrameLayout.LayoutParams place = new FrameLayout.LayoutParams(-1,Math.max(1,bottom-dp(30))); place.setMargins(dp(8), dp(22), dp(8), 0); root.addView(card, place);
         TextView title = new TextView(this); title.setText(getString(R.string.app_name)+" · v"+BuildConfig.VERSION_NAME); title.setTextSize(25); title.setTextColor(Color.WHITE); title.setPadding(dp(4), 0, 0, dp(8)); card.addView(title);
         rows = card;
         LinearLayout tabs = row();
@@ -414,7 +428,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
                 for(int group=0;group<3;group++){LinearLayout r=row();for(int col=0;col<2;col++){final int effect=group*2+col;button(r,VideoEffects.NAMES[effect]+(videoFilter==effect?" ✓":""),()->{videoFilter=effect;remember();buildMenu();});}}
                 text("xBRZ 2× / 3× 先处理像素边缘，再按当前缩放显示。原始像素最流畅，3× 滤镜更耗性能。",14);
             } else {
-            text("上下扩屏：" + (canvas == 0 ? "关闭" : canvas == 1 ? "自动" : canvas + " 行") + " · " + (pad ? "FlipPad 布局" : "触屏宽度适配"), 16);
+            text("上下扩屏：" + (canvas == 0 ? "关闭" : canvas == 1 ? "自动" : canvas + " 行") + " · " + (pad ? "FlipPad 布局" : controller ? "手柄全屏" : "触屏宽度适配"), 16);
             LinearLayout r = row(); for (int v : new int[]{1, 0, 320, 416, 480}) { final int h = v; button(r, v == 0 ? "原始" : v == 1 ? "自动" : ""+v, () -> { canvas = h; synchronized (engine) { setCanvas(effectiveHeight()); } remember(); buildMenu(); }); }
             text("FlipPad 底边位置", 14);
             r = row(); button(r, "上移 10", () -> { edgeOffset = Math.max(-120, edgeOffset - 10); remember(); buildMenu(); });
@@ -440,7 +454,7 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
         if(!focusButtons.isEmpty())focusButtons.get(selected).requestFocus();
         if(samePage)scroll.post(()->scroll.scrollTo(0,oldScroll));
     }
-    String scaleDescription(){int w=dimensions()>>>16;float actual=PortraitLayout.scale(surfaceWidth,w,zoom,integerScale);return "画面缩放："+(zoom==0?(integerScale?"自动整数适配":"满宽适配"):String.format(Locale.ROOT,"%.2f×",zoom))+String.format(Locale.ROOT,"\n实际 %.2f×",actual);}
+    String scaleDescription(){int w=dimensions()>>>16;float actual=displayScale(surfaceWidth,surfaceHeight,w);return "画面缩放："+(zoom==0?(integerScale?"自动整数适配":"满宽适配"):String.format(Locale.ROOT,"%.2f×",zoom))+String.format(Locale.ROOT,"\n实际 %.2f×",actual);}
     void setZoom(float value){zoom=Math.max(1,Math.min(6,value));if(integerScale)zoom=Math.round(zoom);remember();}
     void adjustZoom(int direction){float current=zoom>0?zoom:PortraitLayout.scale(surfaceWidth,Math.max(1,dimensions()>>>16),0,integerScale);setZoom(current+direction*(integerScale?1:.25f));}
     void changeSpeed(int delta) { float[] a = {.5f, 1, 2, 3, 4}; int i = 0; while (i < 4 && a[i] < speed) i++; speed = a[Math.max(0, Math.min(4, i + delta))]; remember(); toast("游戏速度 " + speed + "×"); }
@@ -500,8 +514,8 @@ public class MainActivity extends Activity implements InputManager.InputDeviceLi
             float[][] bounds = PortraitLayout.buttons(getWidth(), getHeight(), getResources().getDisplayMetrics().density);
             for (float[] r : bounds) rects.add(new RectF(r[0], r[1], r[2], r[3]));
         }
-        protected void onDraw(Canvas c){super.onDraw(c);if(pad)return;layoutKeys();p.setTextAlign(Paint.Align.CENTER);p.setTextSize(dp(18));for(int i=0;i<rects.size();i++){RectF r=rects.get(i);p.setColor((keys&masks[i])!=0?MINT:CHIP);c.drawRoundRect(r,dp(10),dp(10),p);p.setColor(Color.WHITE);c.drawText(labels[i],r.centerX(),r.centerY()+dp(6),p);}}
-        public boolean onTouchEvent(MotionEvent e){if(menuOpen)return false;if(e.getActionMasked()==MotionEvent.ACTION_CANCEL){clearKeys();invalidate();return true;}if(pad){if(e.getAction()==MotionEvent.ACTION_UP)menu();return true;}layoutKeys();int active=0;boolean hit=false;for(int k=0;k<e.getPointerCount();k++){if((e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_POINTER_UP)&&e.getActionIndex()==k)continue;float x=e.getX(k),y=e.getY(k);for(int i=0;i<rects.size();i++)if(rects.get(i).contains(x,y)){active|=masks[i];hit=true;}}
+        protected void onDraw(Canvas c){super.onDraw(c);if(controller)return;layoutKeys();p.setTextAlign(Paint.Align.CENTER);p.setTextSize(dp(18));for(int i=0;i<rects.size();i++){RectF r=rects.get(i);p.setColor((keys&masks[i])!=0?MINT:CHIP);c.drawRoundRect(r,dp(10),dp(10),p);p.setColor(Color.WHITE);c.drawText(labels[i],r.centerX(),r.centerY()+dp(6),p);}}
+        public boolean onTouchEvent(MotionEvent e){if(menuOpen)return false;if(e.getActionMasked()==MotionEvent.ACTION_CANCEL){clearKeys();invalidate();return true;}if(controller){if(e.getAction()==MotionEvent.ACTION_UP)menu();return true;}layoutKeys();int active=0;boolean hit=false;for(int k=0;k<e.getPointerCount();k++){if((e.getActionMasked()==MotionEvent.ACTION_UP||e.getActionMasked()==MotionEvent.ACTION_POINTER_UP)&&e.getActionIndex()==k)continue;float x=e.getX(k),y=e.getY(k);for(int i=0;i<rects.size();i++)if(rects.get(i).contains(x,y)){active|=masks[i];hit=true;}}
             if(e.getActionMasked()==MotionEvent.ACTION_UP){float x=e.getX(),y=e.getY();if(rects.get(11).contains(x,y)||y<PortraitLayout.touchTop(getHeight(),getResources().getDisplayMetrics().density))menu();}
             keys=active;invalidate();return true;}
     }

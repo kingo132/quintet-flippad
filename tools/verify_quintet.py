@@ -9,11 +9,12 @@ p.add_argument('--binary',type=Path,required=True);p.add_argument('--rom',type=P
 p.add_argument('--profile',type=int,choices=[1,2],required=True);p.add_argument('--out',type=Path,required=True)
 p.add_argument('--frames',type=int,default=600);p.add_argument('--state',type=Path);p.add_argument('--script',type=Path)
 p.add_argument('--present-every',type=int,default=1)
+p.add_argument('--width',type=int,default=270);p.add_argument('--height',type=int,default=416)
 a=p.parse_args();a.out.mkdir(parents=True,exist_ok=True);out=a.out.resolve();env=os.environ.copy()
-env.update(QUINTET_PROFILE=str(a.profile),QUINTET_AUDIT='1',QUINTET_PRESENT_EVERY=str(a.present_every))
+env.update(QUINTET_PROFILE=str(a.profile),QUINTET_AUDIT='1',QUINTET_WIDTH=str(a.width),QUINTET_PRESENT_EVERY=str(a.present_every))
 if a.state:env['TALL_STATE_IN']=str(a.state.resolve())
 if a.script:env['QUINTET_SCRIPT']=str(a.script.resolve())
-run=subprocess.run([str(a.binary.resolve()),str(a.rom.resolve()),'416',str(out/'expanded'),str(a.frames),'script'],env=env,capture_output=True)
+run=subprocess.run([str(a.binary.resolve()),str(a.rom.resolve()),str(a.height),str(out/'expanded'),str(a.frames),'script'],env=env,capture_output=True)
 (out/'run.log').write_bytes(run.stdout+run.stderr);assert run.returncode==0,run.stderr.decode(errors='replace')[-1000:]
 state=(out/'expanded.state').read_bytes();assert state==(out/'expanded-native.state').read_bytes(),'game state changed by presentation'
 def ppm(path):

@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
 <application android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:theme="@style/AppTheme" android:allowBackup="false" android:appCategory="game" android:enableOnBackInvokedCallback="true">
-<activity android:name="local.sfc.tall.MainActivity" android:screenOrientation="portrait" android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize" android:exported="true">
+<activity android:name="local.sfc.tall.MainActivity" android:screenOrientation="fullSensor" android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize" android:exported="true">
 <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
 </activity></application></manifest>
